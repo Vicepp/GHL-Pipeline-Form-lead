@@ -1,0 +1,16 @@
+{
+  "name": "pheenyx-pipeline-workflow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pheenyx Capital pipeline workflow - forms feed pipelines. Static front end plus one serverless endpoint for GoHighLevel inbound webhooks.",
+  "scripts": {
+    "test": "node test/normalize.test.js",
+    "start": "python -m http.server 8080"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

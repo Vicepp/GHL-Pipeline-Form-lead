@@ -1,0 +1,132 @@
+rules_version = '2';
+
+/* Pheenyx Capital - Pipeline Workflow : Firestore security rules
+   ==============================================================
+   Two kinds of caller:
+
+   1. THE PUBLIC (nobody signed in) - a lead opening a form link.
+      May READ  : forms, pipelines, org  (needed to draw the form)
+      May CREATE: contacts, opportunities, tasks, activity (the submission)
+      May NOT   : read, edit or delete anything else. A lead can never
+                  list your contacts or see other people's submissions.
+
+   2. A TEAM MEMBER (signed in, email listed in /team) - full access.
+
+   Paste this into Firebase console -> Firestore Database -> Rules -> Publish,
+   or deploy with:  firebase deploy --only firestore:rules                  */
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* ---- who counts as staff -------------------------------------- */
+    /* CHANGE THIS to the email of whoever owns the Firebase project.
+       It is the bootstrap admin: it works before /team has any rows. */
+    function ownerEmails() {
+      return ['info@phcinvest.com'];
+    }
+    function email() {
+      return request.auth != null && request.auth.token.email != null
+        ? request.auth.token.email.lower() : '';
+    }
+    function isOwner() {
+      return request.auth != null && email() in ownerEmails();
+    }
+    function isTeam() {
+      return request.auth != null &&
+        (isOwner() || exists(/databases/$(database)/documents/team/$(email())));
+    }
+
+    /* ---- shape checks on public writes ---------------------------- */
+    function str(v, max) {
+      return v is string && v.size() <= max;
+    }
+    /* the submission must point at a form that really exists and is live */
+    function liveForm(formId) {
+      return formId is string
+        && exists(/databases/$(database)/documents/forms/$(formId))
+        && get(/databases/$(database)/documents/forms/$(formId)).data.active == true;
+    }
+
+    /* ---- org settings --------------------------------------------- */
+    match /org/{docId} {
+      allow read: if true;              /* branding shown on the form page */
+      allow write: if isTeam();
+    }
+
+    /* ---- pipelines & forms ---------------------------------------- */
+    /* public read so a form link renders for a lead who is not signed in */
+    match /pipelines/{id} {
+      allow read: if true;
+      allow write: if isTeam();
+    }
+    match /forms/{id} {
+      allow read: if true;
+      allow write: if isTeam();
+    }
+
+    /* ---- team allow-list ------------------------------------------ */
+    match /team/{emailId} {
+      /* a signed-in user may read their own row (that is how the app
+         decides whether to show the "not on the team yet" screen) */
+      allow get: if request.auth != null && (isTeam() || emailId == email());
+      allow list: if isTeam();
+      allow write: if isOwner() || isTeam();
+    }
+
+    /* ---- submissions: create-only for the public ------------------ */
+    match /contacts/{id} {
+      allow read, update, delete: if isTeam();
+      allow create: if isTeam() || (
+        liveForm(request.resource.data.formId)
+        && str(request.resource.data.name, 120)
+        && request.resource.data.name.size() > 0
+        && str(request.resource.data.email, 160)
+        && str(request.resource.data.phone, 40)
+        && request.resource.data.answers is map
+        && request.resource.data.answers.size() <= 60
+        && request.resource.data.keys().hasOnly(
+             ['name','email','phone','formId','tags','createdAt','answers','notes'])
+      );
+    }
+
+    match /opportunities/{id} {
+      allow read, update, delete: if isTeam();
+      allow create: if isTeam() || (
+        liveForm(request.resource.data.formId)
+        && str(request.resource.data.title, 160)
+        && request.resource.data.value is number
+        && request.resource.data.value >= 0
+        && request.resource.data.status == 'open'
+        && str(request.resource.data.pipelineId, 80)
+        && str(request.resource.data.stageId, 80)
+        /* the card must land in the stage the form actually points at */
+        && get(/databases/$(database)/documents/forms/$(request.resource.data.formId)).data.pipelineId
+             == request.resource.data.pipelineId
+        && get(/databases/$(database)/documents/forms/$(request.resource.data.formId)).data.stageId
+             == request.resource.data.stageId
+      );
+    }
+
+    match /tasks/{id} {
+      allow read, update, delete: if isTeam();
+      allow create: if isTeam() || (
+        liveForm(request.resource.data.formId)
+        && str(request.resource.data.title, 200)
+        && request.resource.data.done == false
+      );
+    }
+
+    match /activity/{id} {
+      allow read, update, delete: if isTeam();
+      allow create: if isTeam() || (
+        str(request.resource.data.text, 300)
+        && request.resource.data.type == 'submission'
+      );
+    }
+
+    /* anything not named above is closed */
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

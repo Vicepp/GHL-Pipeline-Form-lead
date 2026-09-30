@@ -1,0 +1,19 @@
+node_modules/
+.DS_Store
+Thumbs.db
+.vercel/
+.firebase/
+*.log
+
+# Keep config.js in the repo: the Firebase web config is public by design
+# (access is enforced by firestore.rules + Auth, not by hiding these keys).
+# If you would rather not commit it, uncomment the next line and set the
+# values from a build-time env var instead.
+# assets/js/config.js
+
+# secrets - never commit these
+tools/service-account.json
+tools/team.json
+TEAM-PASSWORDS.md
+.env
+.env.local
