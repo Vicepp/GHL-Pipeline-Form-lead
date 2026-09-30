@@ -70,10 +70,35 @@ function send(res, status, obj) {
 }
 
 /* ------------------------------------------------------------ handler */
+/** the shared secret, however the caller chose to present it.
+    GHL's webhook action offers several auth schemes; accept the ones that
+    can carry a single secret, so picking the "wrong" one in GHL still works:
+      None       -> ?key=... on the URL
+      API Key    -> x-inbound-key: <secret>   (custom header name)
+      Bearer     -> Authorization: Bearer <secret>
+      Basic Auth -> Authorization: Basic base64(anything:<secret>)
+    OAuth2 cannot work here - it needs a token server we do not run.      */
+function presentedKey(req, q) {
+  if (q.key) return String(q.key);
+  if (req.headers['x-inbound-key']) return String(req.headers['x-inbound-key']);
+  const auth = req.headers.authorization || '';
+  const bearer = auth.match(/^Bearer\s+(.+)$/i);
+  if (bearer) return bearer[1].trim();
+  const basic = auth.match(/^Basic\s+(.+)$/i);
+  if (basic) {
+    try {
+      const decoded = Buffer.from(basic[1].trim(), 'base64').toString('utf8');
+      const i = decoded.indexOf(':');
+      return i >= 0 ? decoded.slice(i + 1) : decoded;  /* password half */
+    } catch (e) { /* malformed header */ }
+  }
+  return '';
+}
+
 module.exports = async function handler(req, res) {
   const q = req.query || {};
   const formId = q.form || q.formId || '';
-  const key = q.key || req.headers['x-inbound-key'] || '';
+  const key = presentedKey(req, q);
 
   const secret = process.env.INBOUND_SECRET;
   if (!secret) return send(res, 500, { ok: false, error: 'INBOUND_SECRET is not set on the server.' });
