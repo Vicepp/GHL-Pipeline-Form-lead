@@ -49,8 +49,21 @@ let sa = null;
 if (fs.existsSync(SA)) {
   try { sa = JSON.parse(fs.readFileSync(SA, 'utf8')); }
   catch (e) { die('tools/service-account.json is not valid JSON: ' + e.message); }
+
+  /* the usual mix-up: the WEB config pasted in place of the service account */
+  if (sa.apiKey || sa.appId || sa.authDomain) {
+    die('That is the Firebase WEB config, not the service account.\n\n' +
+        '  The web config (apiKey / authDomain / appId) is public and already\n' +
+        '  lives in assets/js/config.js - it is not what this file needs.\n\n' +
+        '  What is needed is a downloaded key file containing "client_email"\n' +
+        '  and "private_key":\n\n' +
+        '    Firebase console -> Project settings -> SERVICE ACCOUNTS tab\n' +
+        '    -> Generate new private key -> save it as tools/service-account.json');
+  }
   ['project_id', 'client_email', 'private_key'].forEach(k => {
-    if (!sa[k]) die('tools/service-account.json is missing "' + k + '". Re-download it from Firebase.');
+    if (!sa[k]) die('tools/service-account.json is missing "' + k + '".\n' +
+      '  Re-download it: Firebase console -> Project settings -> Service accounts\n' +
+      '  -> Generate new private key.');
   });
   if (!/BEGIN PRIVATE KEY/.test(sa.private_key)) die('The private_key in that file does not look like a key.');
 }
