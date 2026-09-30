@@ -56,6 +56,32 @@ function go(p, okMsg) {
 const formUrl = (formId) => location.origin + location.pathname + '#/f/' + formId;
 const liveMode = () => S.mode() === 'firebase';
 
+/* ------------------------------------------------------- who is signed in */
+const initialsOf = (n) => String(n || '').trim().split(/\s+/).slice(0, 2)
+  .map(w => w.charAt(0).toUpperCase()).join('') || '?';
+/** the signed-in person, with the display name from the team list */
+function me() {
+  const u = window.Auth && window.Auth.user ? window.Auth.user() : null;
+  if (!u || !u.email) return null;
+  const email = String(u.email).toLowerCase();
+  const name = S.teamName(email) || email.split('@')[0].replace(/^./, c => c.toUpperCase());
+  return { email, name, initials: initialsOf(name) };
+}
+/** does this task belong to the given person? names are the assignment key */
+const ownedBy = (task, who) =>
+  !!who && String(task.owner || '').trim().toLowerCase() === who.name.trim().toLowerCase();
+const greeting = () => {
+  const h = new Date().getHours();
+  return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+};
+/* which slice of the task queue the dashboard is showing */
+function taskScope() {
+  try { return localStorage.getItem('phx_task_scope') || 'mine'; } catch (e) { return 'mine'; }
+}
+function setTaskScope(v) {
+  try { localStorage.setItem('phx_task_scope', v); } catch (e) { /* private mode */ }
+}
+
 /* --------------------------------------------------------------- modal */
 let modalEl = null;
 let openContactId = null;
@@ -96,7 +122,8 @@ function shell(route, topbar, content) {
   const pipeLinks = d.pipelines.map(p =>
     '<a href="#/pipeline/' + p.id + '"><span class="ic" style="color:' + esc(p.color || '#8697b0') + '">&#9679;</span>' +
     esc(p.name) + '<span class="count">' + S.oppsIn(p.id).length + '</span></a>').join('');
-  const user = window.Auth && window.Auth.user ? window.Auth.user() : null;
+  const who = me();
+  const myOpen = who ? d.tasks.filter(t => !t.done && ownedBy(t, who)).length : 0;
 
   app().innerHTML =
     '<div class="shell">' +
@@ -106,8 +133,15 @@ function shell(route, topbar, content) {
         '<div class="side-foot">' +
           '<button class="btn btn-sm" data-act="new-form">+ New form</button>' +
           '<button class="btn btn-sm" data-act="new-pipeline">+ New pipeline</button>' +
-          (user ? '<div style="margin:10px 0 6px;color:#9fb0c8;word-break:break-all">' + esc(user.email) + '</div>' +
-            '<button class="btn btn-sm" data-act="sign-out">Sign out</button>' : '') +
+          (who
+            ? '<div class="who-box">' +
+                '<div class="avatar" title="' + esc(who.email) + '">' + esc(who.initials) + '</div>' +
+                '<div class="who-txt"><b>' + esc(who.name) + '</b><span>' + esc(who.email) + '</span></div>' +
+              '</div>' +
+              (myOpen ? '<a class="btn btn-sm btn-gold" href="#/dashboard" data-act="scope-mine">' +
+                myOpen + ' task' + (myOpen === 1 ? '' : 's') + ' for you</a>' : '') +
+              '<button class="btn btn-sm" data-act="sign-out">Sign out</button>'
+            : '') +
           '<div style="margin-top:8px">' + (liveMode()
             ? '<span class="pill ok"><span class="dot"></span>Live database</span>'
             : '<span class="pill warn">Local demo data</span>') + '</div>' +
@@ -205,19 +239,53 @@ function viewDashboard() {
   const openOpps = d.opportunities.filter(o => o.status === 'open');
   const pipeValue = openOpps.reduce((s, o) => s + (Number(o.value) || 0), 0);
 
-  const kpis = '<div class="kpis">' +
-    kpi('Pending outreach', open.length, overdue.length + ' overdue &middot; ' + todayTasks.length + ' due today', true) +
-    kpi('New leads (7 days)', week.length, d.contacts.length + ' contacts total') +
-    kpi('Open opportunities', openOpps.length, 'across ' + d.pipelines.length + ' pipelines') +
-    kpi('Open pipeline value', short(pipeValue), money(pipeValue)) + '</div>';
+  const whoKpi = me();
+  const myTasks = whoKpi ? d.tasks.filter(t => !t.done && ownedBy(t, whoKpi)) : [];
+  const myOverdue = myTasks.filter(t => daysFromToday(t.dueAt) < 0).length;
 
-  const sorted = open.slice().sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
-  const doneRecent = d.tasks.filter(t => t.done).sort((a, b) => new Date(b.doneAt) - new Date(a.doneAt)).slice(0, 4);
+  const kpis = '<div class="kpis">' +
+    (whoKpi
+      ? kpi('Assigned to you', myTasks.length,
+          myOverdue ? myOverdue + ' overdue' : (myTasks.length ? 'nothing overdue' : 'you are clear'), true)
+      : kpi('Pending outreach', open.length, overdue.length + ' overdue &middot; ' + todayTasks.length + ' due today', true)) +
+    kpi('Team pending', open.length, overdue.length + ' overdue &middot; ' + todayTasks.length + ' due today') +
+    kpi('New leads (7 days)', week.length, d.contacts.length + ' contacts total') +
+    kpi('Open pipeline value', short(pipeValue), openOpps.length + ' open opportunities') + '</div>';
+
+  /* ---- the queue, sliced by who owns it ---- */
+  const who = me();
+  let scope = taskScope();
+  if (!who && scope === 'mine') scope = 'all';
+  const mine = who ? open.filter(t => ownedBy(t, who)) : [];
+  const unassigned = open.filter(t => !String(t.owner || '').trim());
+  const shown = scope === 'mine' ? mine : scope === 'unassigned' ? unassigned : open;
+
+  const segBtn = (v, label, n) =>
+    '<button class="seg-btn ' + (scope === v ? 'on' : '') + '" data-act="task-scope" data-v="' + v + '">' +
+    label + '<b>' + n + '</b></button>';
+  const seg = '<div class="seg">' +
+    (who ? segBtn('mine', 'Mine', mine.length) : '') +
+    segBtn('unassigned', 'Unassigned', unassigned.length) +
+    segBtn('all', 'Everyone', open.length) + '</div>';
+
+  const heading = scope === 'mine' ? 'Your tasks &mdash; people to reach out to'
+    : scope === 'unassigned' ? 'Unassigned &mdash; nobody owns these yet'
+    : 'All pending tasks';
+  const emptyMsg = scope === 'mine'
+    ? '<div class="empty"><div class="big">&#10003;</div>Nothing assigned to you right now.<br>' +
+      '<span class="tiny">Check <b>Unassigned</b> or <b>Everyone</b> for work that needs an owner.</span></div>'
+    : scope === 'unassigned'
+      ? '<div class="empty"><div class="big">&#10003;</div>Every pending task has an owner.</div>'
+      : '<div class="empty"><div class="big">&#10003;</div>Nothing pending. Every lead has been actioned.</div>';
+
+  const sorted = shown.slice().sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
+  const doneRecent = d.tasks.filter(t => t.done)
+    .filter(t => scope !== 'mine' || ownedBy(t, who))
+    .sort((a, b) => new Date(b.doneAt) - new Date(a.doneAt)).slice(0, 4);
+
   const tasksCard =
-    '<div class="card"><div class="card-h"><h3>Pending tasks &mdash; people to reach out to</h3><div class="spacer"></div>' +
-      '<span class="pill ' + (overdue.length ? 'bad' : 'ok') + '">' + open.length + ' open</span></div>' +
-      (sorted.length ? sorted.map(taskRow).join('')
-        : '<div class="empty"><div class="big">&#10003;</div>Nothing pending. Every lead has been actioned.</div>') +
+    '<div class="card"><div class="card-h"><h3>' + heading + '</h3><div class="spacer"></div>' + seg + '</div>' +
+      (sorted.length ? sorted.map(taskRow).join('') : emptyMsg) +
       (doneRecent.length ? '<div class="card-h" style="border-top:1px solid var(--line);border-bottom:0">' +
         '<h3 class="muted tiny">Recently completed</h3></div>' + doneRecent.map(taskRow).join('') : '') +
     '</div>';
@@ -262,7 +330,13 @@ function viewDashboard() {
       '</tbody></table></div></div>';
 
   shell('dashboard',
-    title('Dashboard', 'Everything that came in through a form, and who still needs a call.') +
+    title(whoKpi ? greeting() + ', ' + whoKpi.name.split(' ')[0] : 'Dashboard',
+      whoKpi
+        ? (myTasks.length
+            ? 'You have <b>' + myTasks.length + '</b> ' + (myTasks.length === 1 ? 'person' : 'people') +
+              ' to reach out to' + (myOverdue ? ', <span class="overdue">' + myOverdue + ' overdue</span>' : '') + '.'
+            : 'Nothing assigned to you. Everything that came in through a form is below.')
+        : 'Everything that came in through a form, and who still needs a call.') +
     '<button class="btn" data-act="try-form">Open a form as a lead</button>' +
     '<button class="btn btn-gold" data-act="new-form">+ New form</button>',
     kpis + '<div class="two"><div>' + tasksCard + subsCard + '</div><div>' + formsCard + activityCard + '</div></div>');
@@ -273,6 +347,7 @@ const kpi = (lab, val, foot, accent) =>
 
 function taskRow(t) {
   const c = S.contact(t.contactId);
+  const mine = ownedBy(t, me());
   const dl = dueLabel(t.dueAt);
   const p = t.pipelineId ? S.pipeline(t.pipelineId) : null;
   const o = c ? S.db().opportunities.find(x => x.contactId === c.id) : null;
@@ -283,9 +358,13 @@ function taskRow(t) {
       (c && c.phone ? '<span class="muted">&middot; ' + esc(c.phone) + '</span>' : '') +
       (c && c.email ? '<span class="muted">&middot; ' + esc(c.email) + '</span>' : '') +
       (p ? '<span class="pill">' + esc(p.name) + (o ? ' / ' + esc(S.stageName(o.pipelineId, o.stageId)) : '') + '</span>' : '') +
-      (t.owner ? '<span class="pill">@' + esc(t.owner) + '</span>' : '') +
+      (t.owner
+        ? '<span class="pill ' + (mine ? 'gold' : '') + '">@' + esc(t.owner) + (mine ? ' &middot; you' : '') + '</span>'
+        : '<span class="pill warn">unassigned</span>') +
     '</div></div><div class="t-act">' +
       (c ? '<button class="btn btn-sm" data-act="contact" data-id="' + c.id + '">Open</button>' : '') +
+      (t.done ? '' : '<button class="btn btn-sm" data-act="task-assign" data-id="' + t.id + '">' +
+        (t.owner ? 'Reassign' : 'Assign') + '</button>') +
       (t.done ? '' : '<button class="btn btn-sm" data-act="task-snooze" data-id="' + t.id + '">Snooze</button>') +
     '</div></div>';
 }
@@ -640,20 +719,24 @@ const kvRow = (k, v) => '<div class="k">' + esc(k) + '</div><div>' + v + '</div>
 function viewSettings() {
   const d = S.db();
   const team = d.team || [];
-  const teamCard = liveMode()
-    ? '<div class="card" style="margin-top:16px"><div class="card-h"><h3>Team access</h3><div class="spacer"></div>' +
+  const teamCard =
+      '<div class="card" style="margin-top:16px"><div class="card-h"><h3>Team access</h3><div class="spacer"></div>' +
+      (liveMode() ? '' : '<span class="pill warn">demo data</span> ') +
       '<button class="btn btn-sm btn-gold" data-act="team-add">+ Add member</button></div>' +
+      (liveMode() ? '' : '<div class="card-b tiny muted" style="padding-bottom:0">Running on local demo data, so these ' +
+        'are not real logins yet &mdash; they become real once the Firebase config is in ' +
+        '<code>assets/js/config.js</code>. Names set here are what each person sees when they sign in, ' +
+        'and what tasks get assigned to.</div>') +
       '<div class="scroll-x"><table class="tbl"><thead><tr><th>Email</th><th>Name</th><th>Added</th><th></th></tr></thead><tbody>' +
       (team.length ? team.map(t =>
         '<tr><td class="n">' + esc(t.email) + '</td><td>' + esc(t.name || '-') + '</td>' +
         '<td class="tiny muted">' + (t.createdAt ? fmtDate(t.createdAt) : '-') + '</td>' +
-        '<td><button class="btn btn-sm btn-danger" data-act="team-del" data-id="' + esc(t.id) + '">Remove</button></td></tr>').join('')
+        '<td style="white-space:nowrap">' +
+          '<button class="btn btn-sm" data-act="team-rename" data-id="' + esc(t.id) + '">Name</button> ' +
+          '<button class="btn btn-sm btn-danger" data-act="team-del" data-id="' + esc(t.id) + '">Remove</button></td></tr>').join('')
         : '<tr><td colspan="4"><div class="empty tiny">Nobody added yet. Add an email here, then that person uses ' +
           '<b>First time here?</b> on the sign-in page to set their own password.</div></td></tr>') +
-      '</tbody></table></div></div>'
-    : '<div class="card" style="margin-top:16px"><div class="card-h"><h3>Team access</h3></div>' +
-      '<div class="card-b tiny muted">Logins switch on once the Firebase config is filled in ' +
-      '(<code>assets/js/config.js</code>). In local demo mode there is nothing to sign in to.</div></div>';
+      '</tbody></table></div></div>';
 
   shell('settings', title('Settings', 'Branding, team and your data.'),
     '<div class="two" style="grid-template-columns:1fr 1fr"><div>' +
@@ -1026,6 +1109,35 @@ document.addEventListener('click', e => {
     }
 
     /* tasks */
+    case 'task-scope': setTaskScope(t.dataset.v); render(); return;
+    case 'scope-mine': setTaskScope('mine'); if (location.hash === '#/dashboard') render(); return;
+    case 'task-assign': {
+      const task = S.db().tasks.find(x => x.id === id);
+      const who = me();
+      const people = Array.from(new Set(
+        (S.db().org.owners || []).concat((S.db().team || []).map(r => r.name).filter(Boolean))));
+      openModal({
+        title: 'Who is handling this?',
+        body: '<p class="tiny muted" style="margin-top:0">' + esc(task.title) + '</p>' +
+          '<div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px">' +
+          (who ? '<button class="btn btn-sm btn-gold" data-act="task-assign-go" data-id="' + id +
+            '" data-owner="' + esc(who.name) + '">Assign to me</button>' : '') +
+          people.map(n => '<button class="btn btn-sm ' + (task.owner === n ? 'btn-primary' : '') +
+            '" data-act="task-assign-go" data-id="' + id + '" data-owner="' + esc(n) + '">' + esc(n) + '</button>').join('') +
+          '</div>' +
+          '<label class="f"><span>Or type a name</span><input class="inp" name="owner" value="' +
+            esc(task.owner || '') + '" placeholder="leave blank to unassign"></label>',
+        footer: '<button class="btn" data-act="modal-close">Cancel</button>' +
+          '<button class="btn btn-gold" data-act="task-assign-go" data-id="' + id + '">Save</button>'
+      });
+      return;
+    }
+    case 'task-assign-go': {
+      const owner = t.dataset.owner !== undefined ? t.dataset.owner : mVal('owner');
+      closeModal();
+      go(S.assignTask(id, owner), owner ? 'Assigned to ' + owner : 'Unassigned');
+      return;
+    }
     case 'task-toggle': go(S.toggleTask(id)); return;
     case 'task-snooze': go(S.snoozeTask(id, 2), 'Snoozed 2 days'); return;
     case 'task-add': {
@@ -1056,6 +1168,23 @@ document.addEventListener('click', e => {
       const em = mVal('email'), nm = mVal('name');
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) { toast('Enter a valid email address.', 'bad'); return; }
       closeModal(); go(S.addTeam(em, nm), em + ' can now sign in');
+      return;
+    }
+    case 'team-rename': {
+      const row = (S.db().team || []).find(r => r.id === id) || {};
+      openModal({
+        title: 'Display name',
+        body: '<p class="tiny muted" style="margin-top:0">This is the name shown when ' + esc(id) +
+          ' signs in, and the name tasks are assigned to.</p>' +
+          '<label class="f"><span>Name</span><input class="inp" name="name" value="' + esc(row.name || '') + '"></label>',
+        footer: '<button class="btn" data-act="modal-close">Cancel</button>' +
+          '<button class="btn btn-gold" data-act="team-rename-go" data-id="' + esc(id) + '">Save</button>'
+      });
+      return;
+    }
+    case 'team-rename-go': {
+      const nm = mVal('name'); closeModal();
+      go(S.renameTeam(id, nm), 'Name updated');
       return;
     }
     case 'team-del': {

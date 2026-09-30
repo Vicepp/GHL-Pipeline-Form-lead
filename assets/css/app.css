@@ -261,3 +261,35 @@ table.tbl{width:100%;border-collapse:collapse}
 }
 .boot p{margin:0;font-size:13px}
 @keyframes bpulse{0%,100%{opacity:.55;transform:scale(.96)}50%{opacity:1;transform:scale(1)}}
+
+/* ---------- signed-in identity (sidebar) ---------- */
+.who-box{display:flex;gap:9px;align-items:center;margin:12px 0 9px}
+.avatar{
+  width:32px;height:32px;flex:0 0 32px;border-radius:99px;
+  background:linear-gradient(145deg,var(--gold),#8c6d24);
+  display:grid;place-items:center;color:#14203a;font-weight:800;font-size:12px;letter-spacing:.02em
+}
+.who-txt{min-width:0}
+.who-txt b{display:block;color:#fff;font-size:13px;line-height:1.25;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.who-txt span{display:block;font-size:10.5px;color:#7d8da6;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ---------- segmented task filter ---------- */
+.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:9px;padding:2px;gap:2px}
+.seg-btn{
+  border:0;background:transparent;color:var(--text-2);cursor:pointer;
+  padding:5px 10px;border-radius:7px;font-size:12px;font-weight:600;
+  display:inline-flex;align-items:center;gap:6px;white-space:nowrap
+}
+.seg-btn:hover{color:var(--text)}
+.seg-btn b{
+  font-size:11px;background:var(--line);color:var(--text-2);
+  border-radius:99px;padding:0 6px;min-width:18px;text-align:center
+}
+.seg-btn.on{background:var(--navy);color:#fff;box-shadow:var(--shadow)}
+.seg-btn.on b{background:var(--gold);color:#17203a}
+@media(max-width:620px){
+  .seg{width:100%;justify-content:space-between}
+  .card-h{flex-wrap:wrap}
+}

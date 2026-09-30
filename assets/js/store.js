@@ -511,6 +511,7 @@ async function addTask(contactId, title, days, owner) {
   });
 }
 const deleteTask = (id) => B.del('tasks', id);
+const assignTask = (id, owner) => B.patch('tasks', id, { owner: owner || '' });
 
 /* ================================================================ team */
 async function addTeam(email, name) {
@@ -518,6 +519,13 @@ async function addTeam(email, name) {
   await B.put('team', { id: key, email: key, name: name || '', createdAt: now() });
 }
 const removeTeam = (id) => B.del('team', id);
+const renameTeam = (id, name) => B.patch('team', id, { name: name || '' });
+/** the display name for a signed-in email, from the team allow-list */
+function teamName(email) {
+  const key = String(email || '').toLowerCase();
+  const row = (DB.team || []).find(t => String(t.email || t.id || '').toLowerCase() === key);
+  return row && row.name ? row.name : '';
+}
 
 /* ========================================================== org / data */
 const saveOrg = (org) => B.setOrg(org);
@@ -543,7 +551,7 @@ window.Store = {
   addPipeline, renamePipeline, deletePipeline, addStage, renameStage, moveStage, deleteStage,
   saveForm, deleteForm, blankForm, submitForm,
   moveOpp, updateOpp, deleteOpp, addOppManual,
-  toggleTask, snoozeTask, addTask, deleteTask,
-  addTeam, removeTeam,
+  toggleTask, snoozeTask, addTask, deleteTask, assignTask,
+  addTeam, removeTeam, renameTeam, teamName,
   saveOrg, exportJson, importJson, seedRemote, resetAll, wipeRecords
 };
