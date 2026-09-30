@@ -93,21 +93,27 @@ const body = [
   '# then redeploy - env vars only take effect on a NEW deployment.',
   '',
   '# ---------------------------------------------------------------------',
-  '# USED BY THE SERVER (api/ghl-inbound.js). Required.',
-  '# FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY are real secrets.',
+  '# SIMPLE MODE - these three are all the GHL webhook needs to work.',
+  '# Writes go through the public API, so firestore.rules still applies:',
+  '# the endpoint may create a submission and nothing else.',
+  '# None of these three is a secret except INBOUND_SECRET, which you chose.',
   '# ---------------------------------------------------------------------',
   'INBOUND_SECRET=' + secret,
   'FIREBASE_PROJECT_ID=' + projectId,
+  'FIREBASE_API_KEY=' + (web.apiKey || ''),
+  '',
+  '# ---------------------------------------------------------------------',
+  '# FULL MODE - optional. Adds raw-payload storage and de-duplication of',
+  '# GoHighLevel retries. These two ARE real secrets: they bypass every',
+  '# security rule. Leave them blank to stay in simple mode.',
+  '# ---------------------------------------------------------------------',
   'FIREBASE_CLIENT_EMAIL=' + clientEmail,
   'FIREBASE_PRIVATE_KEY="' + privateKey + '"',
   '',
   '# ---------------------------------------------------------------------',
-  '# THE PUBLIC WEB CONFIG - for reference only.',
-  '# The website does NOT read these; it uses assets/js/config.js, which is',
-  '# where to change them. They are public by design (access is enforced by',
-  '# firestore.rules + Auth), which is why they are safe to sit in the repo.',
+  '# The rest of the public web config - reference only, nothing reads it.',
+  '# The browser gets these from assets/js/config.js.',
   '# ---------------------------------------------------------------------',
-  'FIREBASE_API_KEY=' + (web.apiKey || ''),
   'FIREBASE_AUTH_DOMAIN=' + (web.authDomain || ''),
   'FIREBASE_STORAGE_BUCKET=' + (web.storageBucket || ''),
   'FIREBASE_MESSAGING_SENDER_ID=' + (web.messagingSenderId || ''),
@@ -118,20 +124,33 @@ const body = [
 
 fs.writeFileSync(ENV, body, 'utf8');
 
-const done = !!(secret && projectId && clientEmail && privateKey);
+const simpleReady = !!(secret && projectId && web.apiKey);
+const done = !!(simpleReady && clientEmail && privateKey);
 console.log('\n  Wrote .env.local\n');
 console.log('  INBOUND_SECRET        ' + secret);
 console.log('  FIREBASE_PROJECT_ID   ' + projectId);
-console.log('  FIREBASE_CLIENT_EMAIL ' + (clientEmail || '(still empty - need the service account file)'));
-console.log('  FIREBASE_PRIVATE_KEY  ' + (privateKey ? '(' + privateKey.length + ' chars, escaped for one line)' : '(still empty - need the service account file)'));
+console.log('  FIREBASE_API_KEY      ' + (web.apiKey || '(missing from assets/js/config.js)'));
+console.log('  FIREBASE_CLIENT_EMAIL ' + (clientEmail || '(blank - optional, full mode only)'));
+console.log('  FIREBASE_PRIVATE_KEY  ' + (privateKey ? '(' + privateKey.length + ' chars, escaped)' : '(blank - optional, full mode only)'));
 
-if (done) {
-  console.log('\n  All four set. To load them into Vercel:');
+function howToLoad() {
   console.log('    - open  Vercel -> your project -> Settings -> Environment Variables');
   console.log('    - paste the whole contents of .env.local into the bulk "paste .env" box');
-  console.log('    - then redeploy:  vercel --prod      (env vars only apply to a NEW deployment)');
+  console.log('    - then REDEPLOY (env vars only apply to a new deployment)');
   console.log('\n  Keep INBOUND_SECRET handy - it goes in the GHL webhook action too,');
   console.log('  as an x-inbound-key header or ?key=... on the URL.\n');
+}
+if (done) {
+  console.log('\n  FULL MODE ready - raw payloads kept, GHL retries de-duplicated.');
+  howToLoad();
+} else if (simpleReady) {
+  console.log('\n  SIMPLE MODE ready - the GoHighLevel webhook will work with just');
+  console.log('  INBOUND_SECRET, FIREBASE_PROJECT_ID and FIREBASE_API_KEY.');
+  howToLoad();
+  console.log('  Simple mode does not keep the raw GHL payload and does not spot');
+  console.log('  retries. For those, drop the service account JSON at');
+  console.log('  tools/service-account.json and run this again.\n');
 } else {
-  console.log('\n  Not finished: download the service account key and run this again.\n');
+  console.log('\n  Not usable yet: FIREBASE_API_KEY could not be read from');
+  console.log('  assets/js/config.js. Fill in the Firebase web config there first.\n');
 }

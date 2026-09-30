@@ -14,37 +14,27 @@
        POST /api/ghl-inbound?form=<formId>&key=<INBOUND_SECRET>
        GET  /api/ghl-inbound?form=<formId>&key=<INBOUND_SECRET>   -> health check
 
-   Env vars required (Vercel -> Settings -> Environment Variables):
+   Env vars (Vercel -> Settings -> Environment Variables).
+
+     SIMPLE MODE - no service account needed:
        INBOUND_SECRET         any long random string you invent
-       FIREBASE_PROJECT_ID    from the service account JSON
+       FIREBASE_PROJECT_ID    e.g. ghl-phc-pipeline
+       FIREBASE_API_KEY       the public web API key (same one in config.js)
+
+     FULL MODE - adds raw-payload storage and retry de-duplication:
+       INBOUND_SECRET
+       FIREBASE_PROJECT_ID
        FIREBASE_CLIENT_EMAIL  from the service account JSON
        FIREBASE_PRIVATE_KEY   from the service account JSON (keep the \n)
 
-   This runs server-side, so it writes with admin rights and bypasses
-   firestore.rules. That is deliberate: it lets us store the raw GHL
-   payload and de-duplicate retries, neither of which we want to open up
-   to the public form.                                                  */
+   Simple mode writes through the public API and is therefore bound by
+   firestore.rules exactly like a lead submitting a form: it may create a
+   submission and nothing else. Full mode holds a service account, so it
+   bypasses the rules and can also keep the raw payload and spot retries.
+   A missing service account should cost us detail, never the lead.     */
 
 const { mapToForm } = require('./_normalize');
-
-/* ---------------------------------------------------- firebase admin */
-let adminApp = null;
-function getDb() {
-  const admin = require('firebase-admin');
-  if (!adminApp) {
-    const projectId = process.env.FIREBASE_PROJECT_ID;
-    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-    /* Vercel stores the key with literal \n - turn them back into newlines */
-    const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
-    if (!projectId || !clientEmail || !privateKey) {
-      throw new Error('Firebase service account env vars are not set (FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY)');
-    }
-    adminApp = admin.apps && admin.apps.length
-      ? admin.app()
-      : admin.initializeApp({ credential: admin.credential.cert({ projectId, clientEmail, privateKey }) });
-  }
-  return require('firebase-admin').firestore();
-}
+const { openStore } = require('./_firestore');
 
 /* ------------------------------------------------------------ helpers */
 const uid = (p) => p + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -107,10 +97,9 @@ module.exports = async function handler(req, res) {
 
   let db, form;
   try {
-    db = getDb();
-    const snap = await db.collection('forms').doc(formId).get();
-    if (!snap.exists) return send(res, 404, { ok: false, error: 'No form "' + formId + '" in this workspace.' });
-    form = Object.assign({ id: snap.id }, snap.data());
+    db = openStore();
+    form = await db.getDoc('forms', formId);
+    if (!form) return send(res, 404, { ok: false, error: 'No form "' + formId + '" in this workspace.' });
   } catch (e) {
     return send(res, 500, { ok: false, error: e.message });
   }
@@ -129,10 +118,10 @@ module.exports = async function handler(req, res) {
   if (req.method === 'GET') {
     let pipelineName = form.pipelineId, stageLabel = form.stageId;
     try {
-      const p = await db.collection('pipelines').doc(form.pipelineId).get();
-      if (p.exists) {
-        pipelineName = p.data().name;
-        const st = (p.data().stages || []).find(s => s.id === form.stageId);
+      const p = await db.getDoc('pipelines', form.pipelineId);
+      if (p) {
+        pipelineName = p.name;
+        const st = (p.stages || []).find(s => s.id === form.stageId);
         if (st) stageLabel = st.name;
       }
     } catch (e) { /* names are cosmetic here */ }
@@ -143,7 +132,13 @@ module.exports = async function handler(req, res) {
       willCreateIn: { pipeline: pipelineName, stage: stageLabel },
       assignsTo: form.assignTo || null,
       taskDueInDays: form.taskDueDays == null ? 1 : form.taskDueDays,
-      questionsOnThisForm: (form.fields || []).map(f => f.label)
+      questionsOnThisForm: (form.fields || []).map(f => f.label),
+      storageMode: db.mode,
+      note: db.mode === 'rest'
+        ? 'Simple mode: leads are saved, but the raw GHL payload is not kept and ' +
+          'retries are not de-duplicated. Add FIREBASE_CLIENT_EMAIL and ' +
+          'FIREBASE_PRIVATE_KEY for the full version.'
+        : 'Full mode: raw payloads kept, retries de-duplicated.'
     });
   }
 
@@ -166,23 +161,18 @@ module.exports = async function handler(req, res) {
      silently forever. */
   try {
     const cutoff = Date.now() - 5 * 60e3;
-    let probe = null;
-    if (m.ghlContactId) probe = db.collection('contacts').where('ghlContactId', '==', m.ghlContactId);
-    else if (m.email) probe = db.collection('contacts').where('email', '==', m.email);
-    else if (m.phone) probe = db.collection('contacts').where('phone', '==', m.phone);
-
-    if (probe) {
-      const snap = await probe.limit(25).get();
-      const dupe = snap.docs.find(d => {
-        const c = d.data();
-        return c.formId === form.id && new Date(c.createdAt).getTime() >= cutoff;
+    let rows = [];
+    if (db.canDedupe) {
+      if (m.ghlContactId) rows = await db.findBy('contacts', 'ghlContactId', m.ghlContactId, 25);
+      else if (m.email) rows = await db.findBy('contacts', 'email', m.email, 25);
+      else if (m.phone) rows = await db.findBy('contacts', 'phone', m.phone, 25);
+    }
+    const dupe = rows.find(c => c.formId === form.id && new Date(c.createdAt).getTime() >= cutoff);
+    if (dupe) {
+      return send(res, 200, {
+        ok: true, duplicate: true, contactId: dupe.id,
+        message: 'Already received this lead in the last 5 minutes - ignored the retry.'
       });
-      if (dupe) {
-        return send(res, 200, {
-          ok: true, duplicate: true, contactId: dupe.id,
-          message: 'Already received this lead in the last 5 minutes - ignored the retry.'
-        });
-      }
     }
   } catch (e) {
     /* a lead must never be lost because the duplicate check had a problem */
@@ -225,12 +215,12 @@ module.exports = async function handler(req, res) {
   };
 
   try {
-    const batch = db.batch();
-    batch.set(db.collection('contacts').doc(contactId), contact);
-    batch.set(db.collection('opportunities').doc(oppId), opportunity);
-    batch.set(db.collection('tasks').doc(uid('tk')), task);
-    batch.set(db.collection('activity').doc(uid('ac')), activity);
-    await batch.commit();
+    await db.commit([
+      { coll: 'contacts', id: contactId, data: contact },
+      { coll: 'opportunities', id: oppId, data: opportunity },
+      { coll: 'tasks', id: uid('tk'), data: task },
+      { coll: 'activity', id: uid('ac'), data: activity }
+    ]);
   } catch (e) {
     console.error('write failed', e);
     return send(res, 500, { ok: false, error: 'Could not save the lead: ' + e.message });
@@ -244,6 +234,7 @@ module.exports = async function handler(req, res) {
     /* so you can see at a glance whether the field mapping worked */
     mapped: m.matched,
     couldNotFill: m.unmatched,
-    alsoKept: Object.keys(m.extras)
+    alsoKept: db.keepsRawPayload ? Object.keys(m.extras) : [],
+    storageMode: db.mode
   });
 };
