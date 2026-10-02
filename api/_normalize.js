@@ -94,17 +94,79 @@ function setKey(out, path, value) {
   }
 }
 
+/* GoHighLevel's standard webhook sends EVERY custom field defined in the
+   location as a top-level key - often hundreds, nearly all empty. If one of
+   them is labelled "Email", "Phone" or "Full Name" it collides head-on with
+   the contact's real fields, so identity keys are resolved first and never
+   overwritten by an arbitrary custom-field label. */
+const IDENTITY_KEYS = new Set(
+  ['full_name', 'fullname', 'name', 'contact_name', 'contact_full_name',
+   'first_name', 'firstname', 'contact_first_name', 'given_name',
+   'last_name', 'lastname', 'contact_last_name', 'family_name', 'surname',
+   'email', 'email_address', 'contact_email', 'e_mail',
+   'phone', 'phone_number', 'contact_phone', 'mobile', 'mobile_phone', 'telephone',
+   'contact_id', 'contactid', 'ghl_contact_id'].map(norm));
+
+const ANSWER_CONTAINERS = ['contact', 'customData', 'custom_data', 'customFields',
+  'custom_fields', 'customField', 'data', 'form', 'formData', 'form_data',
+  'fields', 'answers', 'submission', 'payload', 'lead'];
+
 /** the flat lookup table for a payload */
 function index(payload) {
-  const idx = flatten(payload, {}, [], 0);
-  /* common containers deserve a second pass at the top level so their
-     leaf names are not shadowed by an outer key of the same name */
-  ['customData', 'custom_data', 'customFields', 'custom_fields', 'data', 'form', 'contact']
-    .forEach(k => {
-      const sub = payload && payload[k];
-      if (sub && typeof sub === 'object') Object.assign(idx, flatten(sub, {}, [], 0), idx);
-    });
+  const idx = {};
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return flatten(payload, {}, [], 0);
+  }
+  const take = (src) => {
+    Object.keys(src).forEach(k => { if (!(k in idx)) idx[k] = src[k]; });
+  };
+  /* the containers holding a lead's own answers outrank the loose
+     custom-field keys sprayed across the top level */
+  ANSWER_CONTAINERS.forEach(k => {
+    const sub = payload[k];
+    if (sub && typeof sub === 'object') take(flatten(sub, {}, [], 0));
+  });
+  take(flatten(payload, {}, [], 0));
   return idx;
+}
+
+/**
+ * The contact's OWN identity fields, kept apart from the custom-field noise.
+ *
+ * GHL writes its own fields in canonical form (`email`, `first_name`), while a
+ * custom field carries its human label (`Email`, `Full Name`). Both can appear
+ * in the same payload, so trust is tiered:
+ *   A - the key is already canonical  -> certainly GHL's own field
+ *   B - identity-ish, no whitespace   -> probably, e.g. `firstName`
+ * A label containing a space is never treated as an identity field; it stays a
+ * custom field, so "Full Name: Imported Placeholder" cannot rename the lead.
+ */
+function identity(payload) {
+  const out = {};
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return out;
+
+  const sources = [payload];
+  if (payload.contact && typeof payload.contact === 'object' && !Array.isArray(payload.contact)) {
+    sources.push(payload.contact);
+  }
+  const put = (canon, v) => {
+    if (v == null || typeof v === 'object') return;
+    const s = String(v).trim();
+    if (s && !(canon in out)) out[canon] = s;
+  };
+  const tiers = [
+    (k) => k === norm(k),        /* A */
+    (k) => !/\s/.test(k)         /* B */
+  ];
+  tiers.forEach(passes => {
+    sources.forEach(src => {
+      Object.keys(src).forEach(k => {
+        const n = norm(k);
+        if (IDENTITY_KEYS.has(n) && passes(k)) put(n, src[k]);
+      });
+    });
+  });
+  return out;
 }
 
 const first = (idx, keys) => {
@@ -121,11 +183,16 @@ const VALUE_KEYS = ['opportunity_value', 'monetary_value', 'value', 'amount', 'b
 const NOTES_KEYS = ['notes', 'note', 'message', 'comments', 'comment', 'details', 'description'];
 const GHLID_KEYS = ['contact_id', 'contactid', 'id', 'ghl_contact_id'];
 
-function personName(idx) {
-  const full = first(idx, NAME_KEYS);
-  if (full) return full;
-  const f = first(idx, FIRST_KEYS), l = first(idx, LAST_KEYS);
-  return (f + ' ' + l).trim();
+/** trusted identity first; the loose index only as a last resort */
+function personName(id, idx) {
+  idx = idx || id;
+  const build = (src) => {
+    const full = first(src, NAME_KEYS);
+    if (full) return full;
+    const f = first(src, FIRST_KEYS), l = first(src, LAST_KEYS);
+    return (f + ' ' + l).trim();
+  };
+  return build(id) || build(idx);
 }
 
 function toNumber(v) {
@@ -145,8 +212,37 @@ function tagList(idx) {
  * @param {object} payload  the raw webhook body
  * @returns {{name,email,phone,title,value,notes,answers,tags,ghlContactId,matched,unmatched}}
  */
+/* GHL wraps every webhook in routing and analytics metadata. Drop it by
+   exact name or known path prefix - NEVER by loose prefix, or real questions
+   like "Source 5 speaking engagements per week" and "Type of Service Needed"
+   get thrown away with it. */
+const ENVELOPE_EXACT = new Set([
+  'contact_id', 'contactid', 'first_name', 'last_name', 'full_name', 'name',
+  'email', 'phone', 'tags', 'country', 'timezone',
+  /* exact names only: a loose "date_" prefix would also eat a real
+     question such as "Date of birth" */
+  'date_created', 'date_updated', 'date_added', 'datecreated', 'dateupdated', 'dateadded',
+  'full_address', 'contact_type', 'triggerdata', 'webhook_id', 'event', 'type',
+  'source', 'url', 'ip', 'useragent', 'referrer', 'medium', 'mediumid',
+  'sessionsource', 'gclid', 'gbraid', 'wbraid', 'fbp', 'fbeventid',
+  'gaclientid', 'gasessionid', 'adname', 'adgroupid', 'adid', 'company',
+  'website', 'dnd', 'assigned_to', 'assigneduser', 'calendar', 'state',
+  'city', 'postal_code', 'address1', 'timestamp'
+]);
+const ENVELOPE_PREFIX = [
+  'location_', 'workflow_', 'triggerdata_', 'attributionsource_',
+  'lastattributionsource_', 'contact_attributionsource_',
+  'contact_lastattributionsource_', 'utm_', 'customdata_'
+];
+function isEnvelope(k) {
+  if (ENVELOPE_EXACT.has(k)) return true;
+  return ENVELOPE_PREFIX.some(p => k.indexOf(p) === 0);
+}
+
 function mapToForm(form, payload) {
   const idx = index(payload);
+  const id = identity(payload);              /* the contact's own fields */
+  const pick = (keys) => first(id, keys) || first(idx, keys);
   const fields = (form && form.fields) || [];
 
   const answers = {};
@@ -155,13 +251,24 @@ function mapToForm(form, payload) {
 
   /* 1. every question on our form looks for its own label in the payload */
   fields.forEach(q => {
-    const candidates = [q.label, q.ghlKey, q.id].filter(Boolean);
-    let v = first(idx, candidates);
-    /* 2. fall back to the standard aliases for mapped questions */
+    let v = '';
+    /* 1. a question asking who this is trusts GHL's own contact fields
+          ahead of its own label - otherwise a custom field happening to be
+          called "Email" answers it before the real address is ever read */
+    if (q.map === 'name') v = personName(id, {});
+    else if (q.map === 'email') v = first(id, EMAIL_KEYS);
+    else if (q.map === 'phone') v = first(id, PHONE_KEYS);
+
+    /* 2. otherwise match the question's own label against the payload */
     if (!v) {
-      if (q.map === 'name') v = personName(idx);
-      else if (q.map === 'email') v = first(idx, EMAIL_KEYS);
-      else if (q.map === 'phone') v = first(idx, PHONE_KEYS);
+      const candidates = [q.label, q.ghlKey, q.id].filter(Boolean);
+      v = first(idx, candidates);
+    }
+    /* 3. last resort: the usual aliases anywhere in the payload */
+    if (!v) {
+      if (q.map === 'name') v = personName(id, idx);
+      else if (q.map === 'email') v = pick(EMAIL_KEYS);
+      else if (q.map === 'phone') v = pick(PHONE_KEYS);
       else if (q.map === 'value') v = first(idx, VALUE_KEYS);
       else if (q.map === 'notes') v = first(idx, NOTES_KEYS);
     }
@@ -174,9 +281,9 @@ function mapToForm(form, payload) {
     const q = fields.find(x => x.map === m);
     return q && answers[q.label] ? answers[q.label] : '';
   };
-  const name = (byMap('name') || personName(idx) || 'Unnamed lead').slice(0, 120);
-  const email = (byMap('email') || first(idx, EMAIL_KEYS)).slice(0, 160);
-  const phone = (byMap('phone') || first(idx, PHONE_KEYS)).slice(0, 40);
+  const name = (byMap('name') || personName(id, idx) || 'Unnamed lead').slice(0, 120);
+  const email = (byMap('email') || pick(EMAIL_KEYS)).slice(0, 160);
+  const phone = (byMap('phone') || pick(PHONE_KEYS)).slice(0, 40);
   const title = (byMap('title') || name).slice(0, 160);
   const value = toNumber(byMap('value') || first(idx, VALUE_KEYS));
   const notes = (byMap('notes') || first(idx, NOTES_KEYS)).slice(0, 4000);
@@ -190,7 +297,7 @@ function mapToForm(form, payload) {
   const extras = {};
   Object.keys(idx).forEach(k => {
     if (known.has(k)) return;
-    if (/^(location|company|workflow|webhook|event|timestamp|date_|created|updated|type|source|country|state|city|postal|address|website|dnd|assigned|user|calendar|attribution|utm|medium|campaign|referrer|session|fingerprint|ip$)/.test(k)) return;
+    if (isEnvelope(k)) return;
     if (Object.keys(extras).length >= 25) return;
     extras[k] = String(idx[k]).slice(0, 500);
   });
@@ -198,9 +305,10 @@ function mapToForm(form, payload) {
   return {
     name, email, phone, title, value, notes, answers,
     tags: tagList(idx),
-    ghlContactId: first(idx, GHLID_KEYS),
+    ghlContactId: pick(GHLID_KEYS) || first(idx, GHLID_KEYS),
+    ghlFormName: first(idx, ['contact_source', 'form_name', 'formname']),
     extras, matched, unmatched
   };
 }
 
-module.exports = { norm, flatten, index, mapToForm, personName, toNumber, tagList };
+module.exports = { norm, flatten, index, identity, mapToForm, personName, toNumber, tagList, isEnvelope };

@@ -168,6 +168,127 @@ const m8 = mapToForm({ id: 'f', name: 'Bare', pipelineId: 'p', stageId: 's', tag
 eq('c8 still fills the record fields', [m8.name, m8.email, m8.phone], ['Ken Obi', 'ken.obi@outlook.com', '2145550166']);
 eq('c8 answers empty', m8.answers, {});
 
+console.log('\n--- case 9: a real GHL location, hundreds of custom fields ---');
+/* GHL's standard webhook sends every custom field defined in the location as
+   a top-level key, nearly all empty - and some are labelled exactly like the
+   contact's own fields. Field names below are from a live webhook.site capture. */
+const ghlBlizzard = {
+  'LEAD CAPTURE & CONVERSION { Leads from Webinars/Events} ': '',
+  'Attach any relevant photos or documents related to the service request (if applicable).': '',
+  '1000 Post Engagements per week': '',
+  'Cancelled Calls This Week': '1',
+  'Billing Address - Full Address': '',
+  'Multi Line 3hbq': '',
+  'What would you like to see more of from us in 2026?': '',
+  '{- Content scheduling & publishing} ': '',
+  'What best describes your primary profession??': '',
+  '16 leads/week from lead magent': '',
+  '1 Deal Review Meetings per week': '',
+  'CONVERSION FUNNEL {Calls from IG}': '',
+  'LEAD CAPTURE & CONVERSION {Leads from Paid Ads}': '',
+  'Single Line 1315n': '',
+  /* the dangerous ones: custom fields labelled like the real contact fields,
+     deliberately placed BEFORE them in key order */
+  'Email': 'old-crm-import@wrong.example',
+  'Phone': '+10000000000',
+  'Full Name': 'Imported Placeholder',
+  /* the contact's actual details, as GHL sends them */
+  contact_id: 'ghlReal123',
+  first_name: 'Johnson',
+  last_name: 'Adebayo',
+  email: 'johnson.adebayo@example.com',
+  phone: '+2348012345678',
+  location: { id: 'loc_1', name: 'Pheenyx Capital' }
+};
+const m9 = mapToForm(investorForm, ghlBlizzard);
+eq('c9 real email beats a custom field named Email', m9.email, 'johnson.adebayo@example.com');
+eq('c9 real phone beats a custom field named Phone', m9.phone, '+2348012345678');
+eq('c9 real name beats a custom field named Full Name', m9.name, 'Johnson Adebayo');
+eq('c9 company name never becomes the lead name', m9.name !== 'Pheenyx Capital', true);
+eq('c9 ghl contact id', m9.ghlContactId, 'ghlReal123');
+truthy('c9 empty custom fields dropped', Object.keys(m9.extras).every(k => m9.extras[k] !== ''));
+truthy('c9 non-empty custom field kept', m9.extras.cancelled_calls_this_week === '1');
+truthy('c9 extras stay bounded', Object.keys(m9.extras).length <= 25);
+
+console.log('\n--- case 10: 500 custom fields does not blow up ---');
+const huge = { contact_id: 'c500', full_name: 'Scale Test', email: 'scale@example.com' };
+for (let i = 0; i < 500; i++) huge['Custom question number ' + i + '?'] = i % 7 === 0 ? 'answer ' + i : '';
+const t0 = Date.now();
+const m10 = mapToForm(investorForm, huge);
+const ms = Date.now() - t0;
+eq('c10 identity still correct', [m10.name, m10.email], ['Scale Test', 'scale@example.com']);
+truthy('c10 extras capped (' + Object.keys(m10.extras).length + ')', Object.keys(m10.extras).length <= 25);
+truthy('c10 fast enough (' + ms + 'ms)', ms < 1000);
+
+console.log('\n--- case 11: the real Pheenyx GHL payload (captured 2026-10-02) ---');
+/* Trimmed from a live webhook.site capture of the Pheenyx Capital location.
+   GHL's standard webhook sends ~250 custom fields as top-level keys, almost
+   all empty, wrapped in routing and analytics metadata. Note there is NO
+   phone key at all, and customData is empty - this form's answers ARE the
+   top-level custom fields. */
+const pheenyxReal = {
+  'LEAD CAPTURE & CONVERSION { Leads from Webinars/Events} ': '',
+  'Cancelled Calls This Week': '1',
+  'Billing Address - Full Address': '',
+  'Billing Address - Full Name': '',
+  'Billing Address - Phone Number': '',
+  'Source 5 speaking engagements per week': '1',
+  'Source 30 podcasts per week': '3',
+  ' Type of Service Needed (Check all that apply):': '',
+  'Any SOP this week': 'No',
+  'Submission Date': '2026-09-25',
+  'Or Paste the SOP Link here': 'https://phcinvest-my.sharepoint.com/:w:/p/grace/IQCC',
+  '1. What were your top 3 achievements this week?\n\n': '1. Booking of investors calls',
+  '2. What went well?\n\n': 'Everything I set to do went well',
+  'Do you manage any social media platforms?\n\n': 'Adetutu Lawson',
+  ' ': '',
+  '   ': '',
+  'X': '',
+  contact_id: 'nU1NJKsxRYHKIgFpMtCD',
+  first_name: 'Adetutu',
+  last_name: 'Lawson',
+  full_name: 'Adetutu Lawson',
+  email: 'adetutu@phcinvest.com',
+  tags: '',
+  country: 'US',
+  timezone: 'America/Chicago',
+  date_created: '2026-01-23T20:32:24.928Z',
+  contact_source: 'WEEKLY CHECKIN FORM - Copy',
+  full_address: '',
+  contact_type: 'lead',
+  location: { name: 'Pheenyx Capital Investment', country: 'US', fullAddress: '', id: 'WDlWQO8FeXaMieIvPOrw' },
+  workflow: { id: '2274e1df-2327-412a-9687-a593380ab2f7', name: 'New Workflow : 1790779314885' },
+  triggerData: {},
+  contact: {
+    attributionSource: { sessionSource: 'Direct traffic', url: 'https://api.leadconnectorhq.com/widget/form/7w8', medium: 'form', ip: '91.132.137.126', userAgent: 'Mozilla/5.0' },
+    lastAttributionSource: { sessionSource: 'Direct traffic', medium: 'form', ip: '105.127.10.136' }
+  },
+  attributionSource: { sessionSource: 'Direct traffic', medium: 'form', ip: '105.127.10.136', gaClientId: 'GA1.1.148' },
+  customData: {}
+};
+const m11 = mapToForm(investorForm, pheenyxReal);
+eq('c11 name from the contact, not the location', m11.name, 'Adetutu Lawson');
+eq('c11 email', m11.email, 'adetutu@phcinvest.com');
+eq('c11 phone empty when GHL sends none', m11.phone, '');
+eq('c11 a billing-address field is not mistaken for the phone', m11.phone, '');
+eq('c11 ghl contact id', m11.ghlContactId, 'nU1NJKsxRYHKIgFpMtCD');
+eq('c11 captures which GHL form it came from', m11.ghlFormName, 'WEEKLY CHECKIN FORM - Copy');
+eq('c11 no tags when GHL sends an empty string', m11.tags, []);
+eq('c11 reports exactly which questions it could not fill', m11.unmatched,
+  ['Phone', 'Capital you are looking to deploy', 'Are you an accredited investor?', 'What are you hoping to achieve?']);
+truthy('c11 Full name and Email were filled',
+  m11.matched.indexOf('Full name') >= 0 && m11.matched.indexOf('Email') >= 0);
+/* the filter used to eat these two because they start with noise words */
+truthy('c11 keeps "Source 5 speaking engagements per week"', m11.extras.source_5_speaking_engagements_per_week === '1');
+truthy('c11 keeps "Source 30 podcasts per week"', m11.extras.source_30_podcasts_per_week === '3');
+truthy('c11 keeps a real free-text answer',
+  m11.extras['2_what_went_well'] === 'Everything I set to do went well');
+truthy('c11 drops analytics noise', !Object.keys(m11.extras).some(k => /attributionsource|gaclientid|useragent/.test(k)));
+truthy('c11 drops the workflow and location envelope',
+  !Object.keys(m11.extras).some(k => /^(workflow_|location_)/.test(k)));
+truthy('c11 drops the ~250 empty custom fields', Object.keys(m11.extras).every(k => m11.extras[k] !== ''));
+truthy('c11 blank-named keys ignored', !('' in m11.extras));
+
 console.log('\n========================================');
 console.log(fail ? fail + ' FAILED, ' + pass + ' passed' : 'ALL ' + pass + ' PASSED');
 console.log('========================================\n');
