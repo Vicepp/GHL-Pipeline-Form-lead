@@ -293,3 +293,15 @@ table.tbl{width:100%;border-collapse:collapse}
   .seg{width:100%;justify-content:space-between}
   .card-h{flex-wrap:wrap}
 }
+
+/* ---------- arrival stamp + sort control on the task queue ---------- */
+.arrived{color:var(--text-2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sort-sel{
+  width:auto;min-width:0;padding:5px 9px;font-size:12px;font-weight:600;
+  border-radius:9px;background:var(--surface-2);color:var(--text-2);cursor:pointer
+}
+.sort-sel:hover{color:var(--text)}
+@media(max-width:620px){
+  .sort-sel{width:100%;margin-bottom:8px}
+  .arrived{white-space:normal}
+}

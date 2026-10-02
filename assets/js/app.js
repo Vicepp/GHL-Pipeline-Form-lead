@@ -22,6 +22,15 @@ const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); retur
 const daysFromToday = (iso) => Math.round((startOfDay(iso) - startOfDay(new Date())) / 864e5);
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 const fmtDateTime = (iso) => new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+/* the unambiguous version, for hover - includes the year and the timezone */
+const fullStamp = (iso) => {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return 'unknown';
+  return d.toLocaleString('en-US', {
+    weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short'
+  });
+};
 function dueLabel(iso) {
   const d = daysFromToday(iso);
   if (d < 0) return { cls: 'overdue', text: Math.abs(d) + (Math.abs(d) === 1 ? ' day overdue' : ' days overdue') };
@@ -95,6 +104,23 @@ function taskScope() {
 function setTaskScope(v) {
   try { localStorage.setItem('phx_task_scope', v); } catch (e) { /* private mode */ }
 }
+/* due | new | old */
+function taskSort() {
+  try { return localStorage.getItem('phx_task_sort') || 'due'; } catch (e) { return 'due'; }
+}
+function setTaskSort(v) {
+  try { localStorage.setItem('phx_task_sort', v); } catch (e) { /* private mode */ }
+}
+/** when the lead actually reached this system - the contact's own timestamp,
+    falling back to the task's for anything added by hand */
+function arrivedAt(t) {
+  const c = S.contact(t.contactId);
+  return (c && c.createdAt) || t.createdAt;
+}
+const arrivedMs = (t) => {
+  const v = new Date(arrivedAt(t)).getTime();
+  return isNaN(v) ? 0 : v;
+};
 
 /* --------------------------------------------------------------- modal */
 let modalEl = null;
@@ -282,6 +308,14 @@ function viewDashboard() {
     segBtn('unassigned', 'Unassigned', unassigned.length) +
     segBtn('all', 'Everyone', open.length) + '</div>';
 
+  const sortMode = taskSort();
+  const sortOpt = (v, label) =>
+    '<option value="' + v + '"' + (sortMode === v ? ' selected' : '') + '>' + label + '</option>';
+  const sortSel = '<select class="inp sort-sel" data-sort="tasks">' +
+    sortOpt('due', 'Sort: due date') +
+    sortOpt('new', 'Sort: newest first') +
+    sortOpt('old', 'Sort: oldest first') + '</select>';
+
   const heading = scope === 'mine' ? 'Your tasks &mdash; people to reach out to'
     : scope === 'unassigned' ? 'Unassigned &mdash; nobody owns these yet'
     : 'All pending tasks';
@@ -292,16 +326,23 @@ function viewDashboard() {
       ? '<div class="empty"><div class="big">&#10003;</div>Every pending task has an owner.</div>'
       : '<div class="empty"><div class="big">&#10003;</div>Nothing pending. Every lead has been actioned.</div>';
 
-  const sorted = shown.slice().sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
+  const byMode = {
+    due: (a, b) => new Date(a.dueAt) - new Date(b.dueAt),
+    new: (a, b) => arrivedMs(b) - arrivedMs(a),
+    old: (a, b) => arrivedMs(a) - arrivedMs(b)
+  };
+  const sorted = shown.slice().sort(byMode[sortMode] || byMode.due);
   const doneRecent = d.tasks.filter(t => t.done)
     .filter(t => scope !== 'mine' || ownedBy(t, who))
     .sort((a, b) => new Date(b.doneAt) - new Date(a.doneAt)).slice(0, 4);
 
   const tasksCard =
-    '<div class="card"><div class="card-h"><h3>' + heading + '</h3><div class="spacer"></div>' + seg + '</div>' +
-      (sorted.length ? sorted.map(taskRow).join('') : emptyMsg) +
+    '<div class="card" id="taskQueue"><div class="card-h"><h3>' + heading + '</h3><div class="spacer"></div>' +
+      sortSel + seg + '</div>' +
+      '<div id="openQueue">' + (sorted.length ? sorted.map(taskRow).join('') : emptyMsg) + '</div>' +
       (doneRecent.length ? '<div class="card-h" style="border-top:1px solid var(--line);border-bottom:0">' +
-        '<h3 class="muted tiny">Recently completed</h3></div>' + doneRecent.map(taskRow).join('') : '') +
+        '<h3 class="muted tiny">Recently completed</h3></div>' +
+        '<div id="doneQueue">' + doneRecent.map(taskRow).join('') + '</div>' : '') +
     '</div>';
 
   const perForm = d.forms.map(f => ({ f, n: d.contacts.filter(c => c.formId === f.id).length })).sort((a, b) => b.n - a.n);
@@ -338,7 +379,8 @@ function viewDashboard() {
           '<td>' + (o && S.pipeline(o.pipelineId) ? esc(S.pipeline(o.pipelineId).name) : '-') + '</td>' +
           '<td>' + (o ? '<span class="pill info">' + esc(S.stageName(o.pipelineId, o.stageId)) + '</span>' : '-') + '</td>' +
           '<td>' + (o && o.value ? money(o.value) : '<span class="muted">-</span>') + '</td>' +
-          '<td class="tiny muted">' + ago(c.createdAt) + '</td>' +
+          '<td class="tiny muted" title="' + esc(fullStamp(c.createdAt)) + '">' +
+            esc(fmtDateTime(c.createdAt)) + '<br><span style="opacity:.7">' + ago(c.createdAt) + '</span></td>' +
           '<td><button class="btn btn-sm" data-act="contact" data-id="' + c.id + '">Open</button></td></tr>';
       }).join('') : '<tr><td colspan="8"><div class="empty">No submissions yet. Open one of your forms and try it.</div></td></tr>') +
       '</tbody></table></div></div>';
@@ -369,6 +411,8 @@ function taskRow(t) {
     '<button class="chk" data-act="task-toggle" data-id="' + t.id + '" title="Mark done">&#10003;</button>' +
     '<div style="min-width:0"><div class="t-title">' + esc(t.title) + '</div><div class="t-meta">' +
       (t.done ? '<span class="pill ok">done ' + ago(t.doneAt) + '</span>' : '<span class="' + dl.cls + '">' + dl.text + '</span>') +
+      '<span class="arrived" title="Arrived ' + esc(fullStamp(arrivedAt(t))) + '">&#9201; ' +
+        esc(fmtDateTime(arrivedAt(t))) + ' &middot; ' + ago(arrivedAt(t)) + '</span>' +
       (c && c.phone ? '<span class="muted">&middot; ' + esc(c.phone) + '</span>' : '') +
       (c && c.email ? '<span class="muted">&middot; ' + esc(c.email) + '</span>' : '') +
       (p ? '<span class="pill">' + esc(p.name) + (o ? ' / ' + esc(S.stageName(o.pipelineId, o.stageId)) : '') + '</span>' : '') +
@@ -674,7 +718,7 @@ function viewContacts() {
       '<td>' + (f ? '<span class="pill gold">' + esc(f.name) + '</span>' : '<span class="pill">manual</span>') + '</td>' +
       '<td>' + (o ? esc((S.pipeline(o.pipelineId) || {}).name || '-') + ' <span class="pill info">' + esc(S.stageName(o.pipelineId, o.stageId)) + '</span>' : '-') + '</td>' +
       '<td>' + (open ? '<span class="pill warn">' + open + ' open</span>' : '<span class="pill ok">clear</span>') + '</td>' +
-      '<td class="tiny muted">' + fmtDate(c.createdAt) + '</td>' +
+      '<td class="tiny muted" title="' + esc(fullStamp(c.createdAt)) + '">' + esc(fmtDateTime(c.createdAt)) + '</td>' +
       '<td><button class="btn btn-sm" data-act="contact" data-id="' + c.id + '">Open</button></td></tr>';
   }).join('');
   shell('contacts',
@@ -1293,6 +1337,7 @@ document.addEventListener('click', e => {
 /* builder: changing the pipeline repopulates the stage list */
 document.addEventListener('change', e => {
   const el = e.target;
+  if (el.dataset && el.dataset.sort === 'tasks') { setTaskSort(el.value); render(); return; }
   if (!el.dataset || !draft) return;
   if (el.dataset.fb === 'pipelineId') {
     harvestDraft();
