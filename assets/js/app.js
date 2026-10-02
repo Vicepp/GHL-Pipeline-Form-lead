@@ -74,6 +74,20 @@ const greeting = () => {
   const h = new Date().getHours();
   return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
 };
+/* The inbound secret lives in Vercel's env vars, never in the database - the
+   page has no way to know it. Remembering it per-browser is purely so the
+   webhook URL can be shown ready to paste. It stays in this browser: it is
+   never sent to Firestore, so a teammate's device does not learn it. */
+function inboundSecret() {
+  try { return localStorage.getItem('phx_inbound_secret') || ''; } catch (e) { return ''; }
+}
+function setInboundSecret(v) {
+  try {
+    if (v) localStorage.setItem('phx_inbound_secret', v);
+    else localStorage.removeItem('phx_inbound_secret');
+  } catch (e) { /* private mode */ }
+}
+
 /* which slice of the task queue the dashboard is showing */
 function taskScope() {
   try { return localStorage.getItem('phx_task_scope') || 'mine'; } catch (e) { return 'mine'; }
@@ -892,12 +906,29 @@ function dlgShareForm(id) {
   const dest = '<b>' + esc((S.pipeline(f.pipelineId) || {}).name || '-') + ' &rarr; ' +
     esc(S.stageName(f.pipelineId, f.stageId)) + '</b>';
   const embed = '<iframe src="' + url + '" style="width:100%;height:780px;border:0"></iframe>';
-  const hookUrl = location.origin + '/api/ghl-inbound?form=' + id + '&key=YOUR_INBOUND_SECRET';
+  const secret = inboundSecret();
+  const hookUrl = location.origin + '/api/ghl-inbound?form=' + id +
+    '&key=' + (secret || 'YOUR_INBOUND_SECRET');
+
+  const secretBlock = secret
+    ? '<div class="tiny muted" style="margin:-4px 0 12px">Using the secret saved in this browser. ' +
+      '<a href="#" data-act="secret-clear" style="text-decoration:underline">Forget it</a></div>'
+    : '<div class="card" style="margin:0 0 12px;border-left:3px solid var(--gold)"><div class="card-b">' +
+        '<div class="tiny" style="margin-bottom:8px"><b>The URL below is incomplete.</b> ' +
+        '<code>YOUR_INBOUND_SECRET</code> is placeholder text &mdash; replace it with the value of ' +
+        '<code>INBOUND_SECRET</code> from your Vercel environment variables. ' +
+        'Paste it once here and every webhook URL will be shown ready to use.</div>' +
+        '<div class="copybar"><input class="inp" id="secretIn" placeholder="paste INBOUND_SECRET here">' +
+        '<button class="btn btn-gold" data-act="secret-save">Save</button></div>' +
+        '<div class="tiny muted" style="margin-top:7px">Stored in this browser only &mdash; never written ' +
+        'to the database, so it is not shared with anyone else.</div>' +
+      '</div></div>';
 
   const webhookBlock =
     '<p class="tiny muted" style="margin:0 0 10px">In GHL: <b>Automation &rarr; Workflows</b>, trigger ' +
-      '<b>Form Submitted</b>, then <b>+ Add Action &rarr; Webhook</b>, method <b>POST</b>, and this URL. ' +
-      'Swap <code>YOUR_INBOUND_SECRET</code> for the value you set in Vercel.</p>' +
+      '<b>Form Submitted</b>, then <b>+ Add Action &rarr; Webhook</b>, method <b>POST</b>, ' +
+      'AUTHORIZATION <b>None</b>, and this URL.</p>' +
+    secretBlock +
     '<label class="f"><span>Inbound webhook URL (POST)</span><div class="copybar">' +
       '<input class="inp" id="hookUrl" readonly value="' + esc(hookUrl) + '">' +
       '<button class="btn" data-act="copy" data-target="hookUrl">Copy</button></div></label>' +
@@ -1076,6 +1107,26 @@ document.addEventListener('click', e => {
     }
     case 'form-open': closeModal(); location.hash = '#/f/' + id; return;
     case 'form-share': dlgShareForm(id); return;
+    case 'secret-save': {
+      const el = document.getElementById('secretIn');
+      const v = el ? el.value.trim() : '';
+      if (!v) { toast('Paste the secret first.', 'bad'); return; }
+      setInboundSecret(v);
+      const open = modalEl && modalEl.querySelector('[data-act="copy"][data-target="hookUrl"]');
+      const fid = open ? (modalEl.querySelector('[data-act="form-open"]') || {}).dataset : null;
+      closeModal();
+      if (fid && fid.id) dlgShareForm(fid.id);
+      toast('Saved for this browser - webhook URLs are now complete', 'ok');
+      return;
+    }
+    case 'secret-clear': {
+      setInboundSecret('');
+      const fid2 = modalEl ? (modalEl.querySelector('[data-act="form-open"]') || {}).dataset : null;
+      closeModal();
+      if (fid2 && fid2.id) dlgShareForm(fid2.id);
+      toast('Forgotten on this browser');
+      return;
+    }
     case 'try-form': dlgPickForm(); return;
     case 'fb-add':
       harvestDraft();
