@@ -38,6 +38,20 @@ const { openStore } = require('./_firestore');
 
 /* ------------------------------------------------------------ helpers */
 const uid = (p) => p + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+/** a stable fingerprint of a payload - key order must not change the result,
+    or a retry would hash differently and slip past the duplicate check */
+function hashPayload(obj) {
+  const stable = (v) => {
+    /* JSON.stringify(undefined) is undefined, not a string, which would
+       throw at the hash step - normalise it before that can happen */
+    if (v === undefined || typeof v === 'function') return 'null';
+    if (v === null || typeof v !== 'object') return JSON.stringify(v);
+    if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']';
+    return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}';
+  };
+  return require('crypto').createHash('sha256').update(stable(obj)).digest('hex').slice(0, 32);
+}
 const nowIso = () => new Date().toISOString();
 const dayShift = (n) => new Date(Date.now() + n * 864e5).toISOString();
 
@@ -134,6 +148,11 @@ module.exports = async function handler(req, res) {
       taskDueInDays: form.taskDueDays == null ? 1 : form.taskDueDays,
       questionsOnThisForm: (form.fields || []).map(f => f.label),
       storageMode: db.mode,
+      repeatSubmissions: form.allowDuplicates === false
+        ? (db.canDedupe
+            ? 'Identical repeats within 5 minutes are ignored as GHL retries.'
+            : 'Set to ignore retries, but simple mode cannot check - every submission is kept.')
+        : 'Accepted: every submission becomes its own lead.',
       note: db.mode === 'rest'
         ? 'Simple mode: leads are saved, but the raw GHL payload is not kept and ' +
           'retries are not de-duplicated. Add FIREBASE_CLIENT_EMAIL and ' +
@@ -183,20 +202,23 @@ module.exports = async function handler(req, res) {
      fields; combining an equality and a range (formId + createdAt) would need
      a composite index, and if that index were missing the dedupe would fail
      silently forever. */
+  /* Only an IDENTICAL payload counts as a duplicate. GoHighLevel retries a
+     failed delivery byte-for-byte, whereas somebody filling the form again
+     differs by at least a timestamp or an answer - so a genuine repeat
+     submission is never swallowed, however quickly it follows. */
+  const payloadHash = hashPayload(payload);
+  const dedupeOn = form.allowDuplicates === false && db.canDedupe;
   try {
-    const cutoff = Date.now() - 5 * 60e3;
-    let rows = [];
-    if (db.canDedupe) {
-      if (m.ghlContactId) rows = await db.findBy('contacts', 'ghlContactId', m.ghlContactId, 25);
-      else if (m.email) rows = await db.findBy('contacts', 'email', m.email, 25);
-      else if (m.phone) rows = await db.findBy('contacts', 'phone', m.phone, 25);
-    }
-    const dupe = rows.find(c => c.formId === form.id && new Date(c.createdAt).getTime() >= cutoff);
-    if (dupe) {
-      return send(res, 200, {
-        ok: true, duplicate: true, contactId: dupe.id,
-        message: 'Already received this lead in the last 5 minutes - ignored the retry.'
-      });
+    if (dedupeOn) {
+      const cutoff = Date.now() - 5 * 60e3;
+      const rows = await db.findBy('contacts', 'payloadHash', payloadHash, 10);
+      const dupe = rows.find(c => c.formId === form.id && new Date(c.createdAt).getTime() >= cutoff);
+      if (dupe) {
+        return send(res, 200, {
+          ok: true, duplicate: true, contactId: dupe.id,
+          message: 'Identical submission already received in the last 5 minutes - treated as a retry and ignored.'
+        });
+      }
     }
   } catch (e) {
     /* a lead must never be lost because the duplicate check had a problem */
@@ -213,6 +235,7 @@ module.exports = async function handler(req, res) {
     answers: m.answers,
     notes: m.notes,
     source: 'ghl',
+    payloadHash: payloadHash,
     ghlContactId: m.ghlContactId || null,
     ghlExtras: m.extras,
     raw: JSON.parse(JSON.stringify(payload))
@@ -263,6 +286,7 @@ module.exports = async function handler(req, res) {
        without needing the raw payload stored anywhere */
     receivedKeys: Object.keys(payload),
     unmatchedFromGhl: Object.keys(m.extras),
+    duplicatesAllowed: form.allowDuplicates !== false,
     storageMode: db.mode
   });
 };

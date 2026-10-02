@@ -408,7 +408,12 @@ function blankForm() {
     name: '', headline: '', blurb: '',
     pipelineId: p ? p.id : null, stageId: p && p.stages[0] ? p.stages[0].id : null,
     tags: [], assignTo: (DB.org.owners || [])[0] || '', taskTemplate: 'Reach out to {{name}}',
-    taskDueDays: 1, active: true, createdAt: now(),
+    taskDueDays: 1, active: true,
+    /* true  = every submission creates its own lead, even a repeat
+       false = a repeat of the SAME payload within 5 minutes is treated as
+               a GoHighLevel retry and ignored (needs full mode) */
+    allowDuplicates: true,
+    createdAt: now(),
     fields: [
       { id: uid('q'), label: 'Full name', type: 'text', required: true, map: 'name' },
       { id: uid('q'), label: 'Email', type: 'email', required: true, map: 'email' },

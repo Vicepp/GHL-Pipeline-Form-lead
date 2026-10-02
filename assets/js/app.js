@@ -628,6 +628,19 @@ function viewFormBuilder(id) {
         '<span style="margin:0">' + (isGhl ? 'Accepting leads from GoHighLevel' : 'Form is live and accepting submissions') + '</span></label>' +
       (isGhl ? '<div class="tiny muted" style="margin-top:6px">Unticked, the webhook answers GHL with ' +
         '&ldquo;paused&rdquo; and saves nothing.</div>' : '') +
+      '<label class="f" style="display:flex;gap:9px;align-items:center;margin:12px 0 0">' +
+        '<input type="checkbox" data-fb="allowDuplicates"' + (f.allowDuplicates === false ? '' : ' checked') + '>' +
+        '<span style="margin:0">Accept repeat submissions from the same person</span></label>' +
+      '<div class="tiny muted" style="margin-top:6px">' +
+        (f.allowDuplicates === false
+          ? 'Off: an identical submission arriving within 5 minutes is treated as a ' +
+            'GoHighLevel retry and ignored. A genuine resubmission still gets through, ' +
+            'because its answers or timestamp differ. <b>Only works in full mode</b> ' +
+            '(service account configured); otherwise every submission is kept.'
+          : 'On: every submission becomes its own lead, so somebody filling the form ' +
+            'twice gives you two cards. Turn this off only if GoHighLevel retries are ' +
+            'producing duplicate cards.') +
+      '</div>' +
     '</div></div>';
 
   const fields =
@@ -688,6 +701,7 @@ function harvestDraft() {
     const k = el.dataset.fb;
     if (k === 'tags') draft.tags = el.value.split(',').map(s => s.trim()).filter(Boolean);
     else if (k === 'active') draft.active = el.checked;
+    else if (k === 'allowDuplicates') draft.allowDuplicates = el.checked;
     else if (k === 'taskDueDays') draft.taskDueDays = Number(el.value) || 0;
     else draft[k] = el.value;
   });
@@ -1345,6 +1359,8 @@ document.addEventListener('change', e => {
     draft.pipelineId = el.value || null;
     draft.stageId = p && p.stages[0] ? p.stages[0].id : null;
     render();
+  } else if (el.dataset.fb === 'allowDuplicates') {
+    harvestDraft(); draft.allowDuplicates = el.checked; render();
   } else if (el.dataset.fb === 'source') {
     harvestDraft();
     draft.source = el.value;
