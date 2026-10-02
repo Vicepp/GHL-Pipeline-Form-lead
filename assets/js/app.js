@@ -351,7 +351,7 @@ function viewDashboard() {
     '<div class="card"><div class="card-h"><h3>Form &rarr; pipeline routing</h3><div class="spacer"></div>' +
       '<button class="btn btn-sm btn-gold" data-act="new-form">+ New form</button></div><div class="card-b bars">' +
       (perForm.length ? perForm.map(x =>
-        '<div class="bar-row"><div class="bl"><span><a href="#/forms/' + x.f.id + '"><b>' + esc(x.f.name) + '</b></a><br>' +
+        '<div class="bar-row"><div class="bl"><span><a href="#/forms/' + x.f.id + '/leads"><b>' + esc(x.f.name) + '</b></a><br>' +
         '<span class="muted tiny">&rarr; ' + esc(x.f.pipelineId && S.pipeline(x.f.pipelineId) ? S.pipeline(x.f.pipelineId).name : 'not routed') +
         ' / ' + esc(x.f.stageId ? S.stageName(x.f.pipelineId, x.f.stageId) : '-') + '</span></span><b>' + x.n + '</b></div>' +
         '<div class="track"><i style="width:' + Math.round(x.n / maxN * 100) + '%"></i></div></div>').join('')
@@ -445,7 +445,7 @@ function viewPipelines() {
         '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">' +
           p.stages.map(s => '<span class="pill">' + esc(s.name) + ' <b>' + opps.filter(o => o.stageId === s.id).length + '</b></span>').join('') +
         '</div><div class="tiny muted">Fed by: ' + (forms.length ? forms.map(f =>
-          '<a href="#/forms/' + f.id + '"><span class="pill gold">' + esc(f.name) + '</span></a>').join(' ')
+          '<a href="#/forms/' + f.id + '/leads"><span class="pill gold">' + esc(f.name) + '</span></a>').join(' ')
           : '<i>no form points here yet</i>') + '</div></div>' +
       '<div class="modal-f" style="border-top:1px solid var(--line)">' +
         '<button class="btn btn-sm left" data-act="pl-rename" data-id="' + p.id + '">Rename</button>' +
@@ -532,7 +532,8 @@ function viewForms() {
     const n = d.contacts.filter(c => c.formId === f.id).length;
     const p = f.pipelineId ? S.pipeline(f.pipelineId) : null;
     const ghl = f.source === 'ghl';
-    return '<tr><td><div class="n">' + esc(f.name) + ' ' +
+    return '<tr><td><div class="n">' +
+        '<a href="#/forms/' + f.id + '/leads" title="See everyone who filled this in">' + esc(f.name) + '</a> ' +
         (ghl ? '<span class="pill gold" title="The form lives in GoHighLevel and posts here">GHL</span>'
              : '<span class="pill" title="Hosted on this site">hosted</span>') + '</div>' +
       '<div class="tiny muted">' + f.fields.length + ' fields &middot; created ' + fmtDate(f.createdAt) + '</div></td>' +
@@ -540,9 +541,10 @@ function viewForms() {
         : '<span class="pill bad">not routed</span>') + '</td>' +
       '<td>' + (f.tags || []).map(t => '<span class="pill">' + esc(t) + '</span>').join(' ') + '</td>' +
       '<td>' + (f.assignTo ? '@' + esc(f.assignTo) : '<span class="muted">-</span>') + '</td>' +
-      '<td><b>' + n + '</b></td>' +
+      '<td>' + (n ? '<a href="#/forms/' + f.id + '/leads"><b>' + n + '</b></a>' : '<b class="muted">0</b>') + '</td>' +
       '<td>' + (f.active ? '<span class="pill ok"><span class="dot"></span>live</span>' : '<span class="pill">paused</span>') + '</td>' +
       '<td style="white-space:nowrap">' +
+        '<a class="btn btn-sm" href="#/forms/' + f.id + '/leads">Leads</a> ' +
         '<button class="btn btn-sm" data-act="form-open" data-id="' + f.id + '">' + (ghl ? 'Test' : 'Preview') + '</button> ' +
         '<button class="btn btn-sm" data-act="form-share" data-id="' + f.id + '">' + (ghl ? 'Webhook' : 'Share') + '</button> ' +
         '<a class="btn btn-sm btn-primary" href="#/forms/' + f.id + '">Edit</a></td></tr>';
@@ -556,6 +558,81 @@ function viewForms() {
       '<tr><td colspan="7"><div class="empty"><div class="big">&#9776;</div>No forms yet.<br><br>' +
       '<button class="btn btn-gold" data-act="new-form">+ Create your first form</button></div></td></tr>') +
     '</tbody></table></div></div>');
+}
+
+/* ------------------------------------------- who filled in one form ---- */
+function leadSort() {
+  try { return localStorage.getItem('phx_lead_sort') || 'new'; } catch (e) { return 'new'; }
+}
+function setLeadSort(v) {
+  try { localStorage.setItem('phx_lead_sort', v); } catch (e) { /* private mode */ }
+}
+
+function viewFormLeads(id) {
+  const f = S.form(id);
+  if (!f) { location.hash = '#/forms'; return; }
+  const d = S.db();
+  const isGhl = f.source === 'ghl';
+  const people = d.contacts.filter(c => c.formId === id);
+  const week = people.filter(c => daysFromToday(c.createdAt) > -7).length;
+  const openTasks = d.tasks.filter(t => !t.done && people.some(c => c.id === t.contactId)).length;
+  const value = d.opportunities
+    .filter(o => o.formId === id && o.status === 'open')
+    .reduce((s, o) => s + (Number(o.value) || 0), 0);
+
+  const mode = leadSort();
+  const ms = (c) => { const v = new Date(c.createdAt).getTime(); return isNaN(v) ? 0 : v; };
+  const sorted = people.slice().sort(mode === 'old'
+    ? (a, b) => ms(a) - ms(b)
+    : mode === 'name'
+      ? (a, b) => String(a.name || '').localeCompare(String(b.name || ''))
+      : (a, b) => ms(b) - ms(a));
+
+  const opt = (v, label) => '<option value="' + v + '"' + (mode === v ? ' selected' : '') + '>' + label + '</option>';
+  const sortSel = '<select class="inp sort-sel" data-sort="leads">' +
+    opt('new', 'Sort: newest first') + opt('old', 'Sort: oldest first') + opt('name', 'Sort: name') + '</select>';
+
+  const rows = sorted.map(c => {
+    const o = d.opportunities.find(x => x.contactId === c.id);
+    const mine = d.tasks.filter(t => t.contactId === c.id && !t.done).length;
+    return '<tr>' +
+      '<td><div class="n">' + esc(c.name) + '</div>' +
+        '<div class="tiny muted">' + esc(c.email || 'no email') + '</div></td>' +
+      '<td class="tiny">' + esc(c.phone || '-') + '</td>' +
+      '<td>' + (o ? '<span class="pill info">' + esc(S.stageName(o.pipelineId, o.stageId)) + '</span>' : '<span class="muted">-</span>') + '</td>' +
+      '<td>' + (o && o.value ? money(o.value) : '<span class="muted">-</span>') + '</td>' +
+      '<td>' + (mine ? '<span class="pill warn">' + mine + ' open</span>' : '<span class="pill ok">clear</span>') + '</td>' +
+      '<td class="tiny muted" title="' + esc(fullStamp(c.createdAt)) + '">' +
+        esc(fmtDateTime(c.createdAt)) + '<br><span style="opacity:.7">' + ago(c.createdAt) + '</span></td>' +
+      '<td><button class="btn btn-sm" data-act="contact" data-id="' + c.id + '">Open</button></td></tr>';
+  }).join('');
+
+  const empty = '<tr><td colspan="7"><div class="empty"><div class="big">&#9776;</div>' +
+    'Nobody has filled this in yet.<br><span class="tiny">' +
+    (isGhl
+      ? 'Leads arrive here once the GoHighLevel workflow posts to this form’s webhook.'
+      : 'Share the form link and submissions will appear here.') +
+    '</span><br><br><button class="btn btn-sm btn-gold" data-act="form-share" data-id="' + f.id + '">' +
+    (isGhl ? 'Show the webhook URL' : 'Get the form link') + '</button></div></td></tr>';
+
+  shell('forms',
+    title(f.name, (isGhl ? 'Receives from GoHighLevel' : 'Hosted here') + ' &middot; leads land in <b>' +
+      esc((S.pipeline(f.pipelineId) || {}).name || 'not routed') + ' &rarr; ' +
+      esc(S.stageName(f.pipelineId, f.stageId)) + '</b>') +
+    '<a class="btn btn-sm" href="#/forms">All forms</a>' +
+    '<button class="btn btn-sm" data-act="form-share" data-id="' + f.id + '">' + (isGhl ? 'Webhook' : 'Share') + '</button>' +
+    '<a class="btn btn-sm btn-primary" href="#/forms/' + f.id + '">Edit form</a>',
+    '<div class="kpis">' +
+      kpi('Submissions', people.length, 'through this form', true) +
+      kpi('Last 7 days', week, people.length ? 'most recent ' + ago(sorted[0] ? sorted[0].createdAt : new Date()) : 'none yet') +
+      kpi('Still to action', openTasks, 'open tasks') +
+      kpi('Pipeline value', short(value), money(value)) +
+    '</div>' +
+    '<div class="card"><div class="card-h"><h3>People who filled in this form</h3>' +
+      '<div class="spacer"></div>' + (people.length ? sortSel : '') + '</div>' +
+      '<div class="scroll-x"><table class="tbl"><thead><tr>' +
+      '<th>Name</th><th>Phone</th><th>Stage</th><th>Value</th><th>Tasks</th><th>Arrived</th><th></th>' +
+      '</tr></thead><tbody>' + (rows || empty) + '</tbody></table></div></div>');
 }
 
 /* --------------------------------------------------------- form builder */
@@ -729,7 +806,8 @@ function viewContacts() {
     const open = d.tasks.filter(t => t.contactId === c.id && !t.done).length;
     return '<tr><td><div class="n">' + esc(c.name) + '</div><div class="tiny muted">' + esc(c.email || '') + '</div></td>' +
       '<td class="tiny">' + esc(c.phone || '-') + '</td>' +
-      '<td>' + (f ? '<span class="pill gold">' + esc(f.name) + '</span>' : '<span class="pill">manual</span>') + '</td>' +
+      '<td>' + (f ? '<a href="#/forms/' + f.id + '/leads"><span class="pill gold">' + esc(f.name) + '</span></a>'
+        : '<span class="pill">manual</span>') + '</td>' +
       '<td>' + (o ? esc((S.pipeline(o.pipelineId) || {}).name || '-') + ' <span class="pill info">' + esc(S.stageName(o.pipelineId, o.stageId)) + '</span>' : '-') + '</td>' +
       '<td>' + (open ? '<span class="pill warn">' + open + ' open</span>' : '<span class="pill ok">clear</span>') + '</td>' +
       '<td class="tiny muted" title="' + esc(fullStamp(c.createdAt)) + '">' + esc(fmtDateTime(c.createdAt)) + '</td>' +
@@ -1352,6 +1430,7 @@ document.addEventListener('click', e => {
 document.addEventListener('change', e => {
   const el = e.target;
   if (el.dataset && el.dataset.sort === 'tasks') { setTaskSort(el.value); render(); return; }
+  if (el.dataset && el.dataset.sort === 'leads') { setLeadSort(el.value); render(); return; }
   if (!el.dataset || !draft) return;
   if (el.dataset.fb === 'pipelineId') {
     harvestDraft();
@@ -1392,7 +1471,11 @@ function render() {
     case 'dashboard': viewDashboard(); break;
     case 'pipelines': viewPipelines(); break;
     case 'pipeline': viewBoard(parts[1]); break;
-    case 'forms': parts[1] ? viewFormBuilder(parts[1]) : viewForms(); break;
+    case 'forms':
+      if (parts[1] && parts[2] === 'leads') viewFormLeads(parts[1]);
+      else if (parts[1]) viewFormBuilder(parts[1]);
+      else viewForms();
+      break;
     case 'contacts': viewContacts(); break;
     case 'settings': viewSettings(); break;
     default: location.hash = '#/dashboard';
