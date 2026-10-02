@@ -154,6 +154,30 @@ module.exports = async function handler(req, res) {
   }
   const m = mapToForm(form, payload);
 
+  /* ---- ?echo=1 : show what arrived, create nothing -------------------
+     Add &echo=1 to the webhook URL in GHL, hit Test workflow, and GHL's
+     Execution logs will show this response. It is the exact payload GHL
+     sends, read from inside our own endpoint - no third-party capture
+     service, and no test lead left on the board. Remove &echo=1 after.  */
+  if (q.echo === '1' || q.echo === 'true') {
+    return send(res, 200, {
+      ok: true,
+      echo: true,
+      message: 'Echo mode: nothing was saved. Send this whole response to Claude to tighten the field mapping, then remove &echo=1 from the URL.',
+      form: form.name,
+      receivedKeys: Object.keys(payload),
+      received: payload,
+      wouldCreate: {
+        name: m.name, email: m.email, phone: m.phone,
+        title: m.title, value: m.value, notes: m.notes,
+        tags: Array.from(new Set((form.tags || []).concat(m.tags, ['ghl'])))
+      },
+      fieldsFilled: m.matched,
+      fieldsLeftEmpty: m.unmatched,
+      unmatchedFromGhl: m.extras
+    });
+  }
+
   /* ------- de-duplicate GHL retries: same person, same form, last 5 min ------
      Deliberately ONE equality filter per query. Firestore auto-indexes single
      fields; combining an equality and a range (formId + createdAt) would need
@@ -235,6 +259,10 @@ module.exports = async function handler(req, res) {
     mapped: m.matched,
     couldNotFill: m.unmatched,
     alsoKept: db.keepsRawPayload ? Object.keys(m.extras) : [],
+    /* so GHL's execution log alone is enough to debug a mapping problem,
+       without needing the raw payload stored anywhere */
+    receivedKeys: Object.keys(payload),
+    unmatchedFromGhl: Object.keys(m.extras),
     storageMode: db.mode
   });
 };
