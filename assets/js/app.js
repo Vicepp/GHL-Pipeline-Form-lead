@@ -68,6 +68,16 @@ const liveMode = () => S.mode() === 'firebase';
 /* ------------------------------------------------------- who is signed in */
 const initialsOf = (n) => String(n || '').trim().split(/\s+/).slice(0, 2)
   .map(w => w.charAt(0).toUpperCase()).join('') || '?';
+/* a stable colour per person, so the same lead always looks the same.
+   Tints chosen to sit with the navy/gold palette rather than fight it. */
+const AV_TINTS = ['#24375c', '#4b3f72', '#1f5f54', '#7a5c14', '#7c3b52', '#2b5578', '#45546e', '#6a4a2c'];
+function leadAvatar(name) {
+  const n = String(name || '?').trim();
+  let h = 0;
+  for (let i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) >>> 0;
+  return '<span class="lead-av" style="background:' + AV_TINTS[h % AV_TINTS.length] + '" ' +
+    'aria-hidden="true">' + esc(initialsOf(n)) + '</span>';
+}
 /** the signed-in person, with the display name from the team list */
 function me() {
   const u = window.Auth && window.Auth.user ? window.Auth.user() : null;
@@ -425,7 +435,8 @@ function taskRow(t) {
   const f = srcId ? S.form(srcId) : null;
   return '<div class="task ' + (t.done ? 'done' : '') + '">' +
     '<button class="chk" data-act="task-toggle" data-id="' + t.id + '" title="Mark done">&#10003;</button>' +
-    '<div style="min-width:0"><div class="t-title">' + esc(t.title) + '</div><div class="t-meta">' +
+    leadAvatar(c ? c.name : t.title.replace(/^Reach out to\s+/i, '')) +
+    '<div style="min-width:0;flex:1"><div class="t-title">' + esc(t.title) + '</div><div class="t-meta">' +
       (t.done ? '<span class="pill ok">done ' + ago(t.doneAt) + '</span>' : '<span class="' + dl.cls + '">' + dl.text + '</span>') +
       '<span class="arrived" title="Arrived ' + esc(fullStamp(arrivedAt(t))) + '">&#9201; ' +
         esc(fmtDateTime(arrivedAt(t))) + ' &middot; ' + ago(arrivedAt(t)) + '</span>' +
