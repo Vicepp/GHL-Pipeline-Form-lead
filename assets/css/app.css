@@ -519,3 +519,69 @@ body{
   .om-col{width:232px;flex-basis:232px}
   .om-chainbar{gap:9px;padding:11px 13px}
 }
+
+/* ============================================================
+   STATISTICS CHART
+   Series colours live in app.js (validated pair) - only chrome
+   and layout here, deliberately recessive so the data leads.
+   ============================================================ */
+.st-card{margin-bottom:16px}
+.st-card .card-h{gap:10px;flex-wrap:wrap}
+
+/* the date strip */
+.st-chips{
+  display:flex;gap:7px;padding:12px 18px 4px;overflow-x:auto;scrollbar-width:thin
+}
+.st-chip{
+  flex:0 0 auto;min-width:52px;padding:7px 10px;border-radius:12px;cursor:pointer;
+  border:1px solid rgba(16,24,40,.08);background:rgba(16,24,40,.03);
+  display:flex;flex-direction:column;align-items:center;gap:1px;line-height:1.15;
+  transition:background .13s, border-color .13s, transform .13s
+}
+.st-chip b{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--text)}
+.st-chip span{font-size:10.5px;color:var(--text-3)}
+.st-chip:hover{background:rgba(16,24,40,.06);transform:translateY(-1px)}
+.st-chip.on{
+  background:linear-gradient(145deg,#1b2b4a,#111c31);border-color:transparent;
+  box-shadow:0 4px 14px rgba(16,24,40,.22)
+}
+.st-chip.on b{color:#fff}
+.st-chip.on span{color:rgba(255,255,255,.62)}
+
+/* the figure row above the plot */
+.st-head{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:6px}
+/* proportional figures on a display number - tabular looks loose at this size */
+.st-big{font-size:30px;font-weight:700;letter-spacing:-.02em;line-height:1}
+.st-delta{font-size:12.5px;font-weight:650;padding-bottom:3px;color:var(--text-2)}
+.st-delta.up{color:var(--ok)}
+.st-delta.down{color:var(--bad)}
+.st-legend{display:flex;gap:14px;align-items:center;font-size:12px;color:var(--text-2);padding-bottom:3px}
+.st-legend span{display:inline-flex;align-items:center;gap:6px}
+.st-legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
+.st-legend i.dash{
+  background:none !important;
+  border-top:3px dotted #b8860b;height:0;border-radius:0
+}
+
+/* the plot - height includes the axis band so nothing is clipped */
+.st-plot{position:relative}
+.st-svg{width:100%;height:230px;display:block;overflow:visible}
+.st-tick{font-size:11px;fill:var(--text-3);font-variant-numeric:tabular-nums}
+.st-peak{font-size:12px;font-weight:700;fill:var(--text)}
+.st-hit{cursor:crosshair}
+.st-tip{
+  position:absolute;top:6px;background:var(--navy);color:#fff;border-radius:10px;
+  padding:8px 11px;font-size:11.5px;pointer-events:none;box-shadow:var(--sh-2);
+  min-width:140px;z-index:5
+}
+.st-tip b{display:block;margin-bottom:4px;font-size:12px}
+.st-tip span{display:flex;align-items:center;gap:6px;color:rgba(255,255,255,.82)}
+.st-tip i{width:9px;height:9px;border-radius:2px;display:inline-block}
+.st-tbl td{font-variant-numeric:tabular-nums}
+
+@media(max-width:620px){
+  .st-svg{height:190px}
+  .st-head{gap:10px}
+  .st-big{font-size:25px}
+  .st-chips{padding:10px 12px 4px}
+}
