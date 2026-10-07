@@ -584,6 +584,8 @@ function viewForms() {
   }).join('');
   shell('forms',
     title('Forms', 'Every form is wired to one pipeline and one stage. Fill it in and the lead lands on that board.') +
+    '<div class="seg"><button class="seg-btn" data-act="forms-view" data-v="map">Map</button>' +
+      '<button class="seg-btn on" data-act="forms-view" data-v="list">List</button></div>' +
     '<button class="btn btn-gold" data-act="new-form">+ New form</button>',
     '<div class="card"><div class="scroll-x"><table class="tbl"><thead><tr>' +
     '<th>Form</th><th>Goes into</th><th>Tags applied</th><th>Assigned</th><th>Submissions</th><th>Status</th><th></th>' +
@@ -591,6 +593,170 @@ function viewForms() {
       '<tr><td colspan="7"><div class="empty"><div class="big">&#9776;</div>No forms yet.<br><br>' +
       '<button class="btn btn-gold" data-act="new-form">+ Create your first form</button></div></td></tr>') +
     '</tbody></table></div></div>');
+}
+
+/* ===================== FORMS MAP (org-chart view) ===================== */
+/* Which view the Forms page opens in */
+function formsView() {
+  try { return localStorage.getItem('phx_forms_view') || 'map'; } catch (e) { return 'map'; }
+}
+function setFormsView(v) {
+  try { localStorage.setItem('phx_forms_view', v); } catch (e) { /* private mode */ }
+}
+let omFocus = null;   /* the person whose chain is being traced */
+
+/** One identity across forms. Email is the only reliable key - the same
+    person often types their name differently, and a shared office phone
+    would merge two people, so phone is used only when there is no email. */
+function personKey(c) {
+  const e = String(c.email || '').trim().toLowerCase();
+  if (e) return 'e:' + e;
+  const p = String(c.phone || '').replace(/\D/g, '');
+  if (p.length >= 7) return 'p:' + p.slice(-10);
+  const n = String(c.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  return n ? 'n:' + n : 'x:' + c.id;
+}
+
+/** personKey -> { name, email, phone, formIds, contacts } */
+function buildIdentityIndex() {
+  const idx = {};
+  S.db().contacts.forEach(c => {
+    if (!c.formId) return;
+    const k = personKey(c);
+    if (!idx[k]) idx[k] = { key: k, name: c.name, email: c.email, phone: c.phone, formIds: [], contacts: [] };
+    const r = idx[k];
+    r.contacts.push(c);
+    if (r.formIds.indexOf(c.formId) < 0) r.formIds.push(c.formId);
+    if (!r.email && c.email) r.email = c.email;
+    if (!r.phone && c.phone) r.phone = c.phone;
+  });
+  return idx;
+}
+
+const OM_COLOURS = ['#2d4a7c', '#1f7a5f', '#8a6b1f', '#6b3f73', '#1f6a7a', '#7a3f4f', '#3f5a2d', '#5a4a8a'];
+function omColour(f, i) {
+  const p = f.pipelineId ? S.pipeline(f.pipelineId) : null;
+  if (p && p.color && /^#[0-9a-f]{6}$/i.test(p.color) && p.color.toLowerCase() !== '#1e2d4a') return p.color;
+  return OM_COLOURS[i % OM_COLOURS.length];
+}
+
+function viewFormsMap() {
+  const d = S.db();
+  const idx = buildIdentityIndex();
+  const multi = Object.keys(idx).filter(k => idx[k].formIds.length > 1);
+  const focus = omFocus && idx[omFocus] ? idx[omFocus] : null;
+  const CAP = 10;
+
+  const cols = d.forms.map((f, i) => {
+    const colour = omColour(f, i);
+    const people = d.contacts.filter(c => c.formId === f.id)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const shown = people.slice(0, CAP);
+
+    const cards = shown.map(c => {
+      const k = personKey(c);
+      const rec = idx[k] || { formIds: [f.id] };
+      const n = rec.formIds.length;
+      const isLinked = focus && k === focus.key;
+      const cls = 'om-person' + (isLinked ? ' linked' : (focus ? ' faded' : ''));
+      return '<div class="' + cls + '" data-act="om-focus" data-pk="' + esc(k) + '" data-cid="' + c.id + '" ' +
+        'title="' + esc(c.name) + (n > 1 ? ' - appears in ' + n + ' forms' : '') + '">' +
+        leadAvatar(c.name) +
+        '<div class="om-txt"><b>' + esc(c.name) + '</b>' +
+          '<span>' + esc(c.email || c.phone || fmtDate(c.createdAt)) + '</span></div>' +
+        (n > 1 ? '<span class="om-chain" title="Also filled in ' + (n - 1) + ' other form' +
+          (n === 2 ? '' : 's') + '">&#128279; ' + n + '</span>' : '') +
+        '</div>';
+    }).join('');
+
+    return '<div class="om-col">' +
+      '<div class="om-head" style="background:' + esc(colour) + '">' +
+        '<a href="#/forms/' + f.id + '/leads">' + esc(f.name) + '</a>' +
+        '<span class="om-count">' + people.length + '</span></div>' +
+      '<div class="om-people">' +
+        (cards || '<div class="om-empty">No submissions yet</div>') +
+        (people.length > CAP
+          ? '<a class="om-more" href="#/forms/' + f.id + '/leads">+ ' + (people.length - CAP) + ' more</a>' : '') +
+      '</div></div>';
+  }).join('');
+
+  const chainBar = focus
+    ? '<div class="om-chainbar">' +
+        leadAvatar(focus.name) +
+        '<div class="om-cb-txt"><b>' + esc(focus.name) + '</b>' +
+          '<span>' + esc(focus.email || focus.phone || '') + '</span></div>' +
+        '<div class="om-cb-forms">' +
+          (focus.formIds.length > 1 ? 'Engaged with ' + focus.formIds.length + ' forms: ' : 'Only this form: ') +
+          focus.formIds.map(fid => {
+            const ff = S.form(fid);
+            return '<a href="#/forms/' + fid + '/leads"><span class="pill gold">' +
+              esc(ff ? ff.name : fid) + '</span></a>';
+          }).join(' ') +
+        '</div>' +
+        '<button class="btn btn-sm" data-act="om-clear">Clear</button>' +
+      '</div>'
+    : '<div class="om-hint">Click anyone to trace every form they have filled in.' +
+      (multi.length ? ' <b>' + multi.length + '</b> ' + (multi.length === 1 ? 'person has' : 'people have') +
+        ' used more than one.' : '') + '</div>';
+
+  shell('forms',
+    title('Forms', d.forms.length + ' forms &middot; ' + d.contacts.filter(c => c.formId).length +
+      ' submissions &middot; ' + multi.length + ' repeat ' + (multi.length === 1 ? 'person' : 'people')) +
+    '<div class="seg"><button class="seg-btn on" data-act="forms-view" data-v="map">Map</button>' +
+      '<button class="seg-btn" data-act="forms-view" data-v="list">List</button></div>' +
+    '<button class="btn btn-gold" data-act="new-form">+ New form</button>',
+    chainBar +
+    '<div class="orgmap' + (focus ? ' focusing' : '') + '" id="orgmap">' +
+      '<div class="om-rootrow"><div class="om-root">' +
+        '<div class="mark">P</div><div><b>' + esc(d.org.name) + '</b>' +
+        '<span>' + d.forms.length + ' forms feeding ' + d.pipelines.length + ' pipelines</span></div>' +
+      '</div></div>' +
+      '<div class="om-rail"></div>' +
+      '<div class="om-cols">' + (cols || '<div class="empty">No forms yet.</div>') + '</div>' +
+      '<svg class="om-links" aria-hidden="true"></svg>' +
+    '</div>');
+
+  drawChainLinks();
+}
+
+/** Join every card belonging to the focused person with a curved path,
+    measured after layout so it survives scrolling and wrapping. */
+function drawChainLinks() {
+  const wrap = document.getElementById('orgmap');
+  if (!wrap) return;
+  const svg = wrap.querySelector('.om-links');
+  if (!svg) return;
+  svg.innerHTML = '';
+  const nodes = [].slice.call(wrap.querySelectorAll('.om-person.linked'));
+  if (nodes.length < 2) return;
+  try {
+    const base = wrap.getBoundingClientRect();
+    svg.setAttribute('width', wrap.scrollWidth);
+    svg.setAttribute('height', wrap.scrollHeight);
+    svg.setAttribute('viewBox', '0 0 ' + wrap.scrollWidth + ' ' + wrap.scrollHeight);
+    const pts = nodes.map(n => {
+      const r = n.getBoundingClientRect();
+      return {
+        l: r.left - base.left + wrap.scrollLeft, r: r.right - base.left + wrap.scrollLeft,
+        y: r.top - base.top + wrap.scrollTop + r.height / 2
+      };
+    });
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const rightward = b.l > a.l;
+      const x1 = rightward ? a.r : a.l;
+      const x2 = rightward ? b.l : b.r;
+      const mid = (x1 + x2) / 2;
+      const dpath = 'M ' + x1 + ' ' + a.y + ' C ' + mid + ' ' + a.y + ', ' + mid + ' ' + b.y +
+        ', ' + x2 + ' ' + b.y;
+      svg.insertAdjacentHTML('beforeend',
+        '<path d="' + dpath + '" fill="none" stroke="#c8a04a" stroke-width="2.5" ' +
+        'stroke-linecap="round" stroke-dasharray="7 5"><animate attributeName="stroke-dashoffset" ' +
+        'from="24" to="0" dur="1s" repeatCount="indefinite"/></path>' +
+        '<circle cx="' + x1 + '" cy="' + a.y + '" r="4" fill="#c8a04a"/>' +
+        '<circle cx="' + x2 + '" cy="' + b.y + '" r="4" fill="#c8a04a"/>');
+    }
+  } catch (e) { /* measuring failed; the highlight alone still reads */ }
 }
 
 /* ------------------------------------------- who filled in one form ---- */
@@ -1342,6 +1508,14 @@ document.addEventListener('click', e => {
       return;
     }
     case 'form-open': closeModal(); location.hash = '#/f/' + id; return;
+    case 'forms-view': setFormsView(t.dataset.v); omFocus = null; render(); return;
+    case 'om-focus': {
+      const pk = t.dataset.pk;
+      omFocus = (omFocus === pk) ? null : pk;   /* clicking again releases it */
+      render();
+      return;
+    }
+    case 'om-clear': omFocus = null; render(); return;
     case 'form-share': dlgShareForm(id); return;
     case 'form-reassign': {
       const fm = S.form(id);
@@ -1620,7 +1794,8 @@ function render() {
     case 'forms':
       if (parts[1] && parts[2] === 'leads') viewFormLeads(parts[1]);
       else if (parts[1]) viewFormBuilder(parts[1]);
-      else viewForms();
+      else if (formsView() === 'list') viewForms();
+      else viewFormsMap();
       break;
     case 'contacts': viewContacts(); break;
     case 'settings': viewSettings(); break;
@@ -1628,7 +1803,13 @@ function render() {
   }
   window.scrollTo(0, 0);
 }
-window.addEventListener('hashchange', () => { closeModal(); render(); });
+window.addEventListener('hashchange', () => {
+  closeModal();
+  if (location.hash.indexOf('#/forms') !== 0) omFocus = null;
+  render();
+});
+/* the chain lines are measured from the laid-out page, so redraw on resize */
+window.addEventListener('resize', () => { if (document.getElementById('orgmap')) drawChainLinks(); });
 
 /* ---------------------------------------------------------------- start */
 let started = false;
