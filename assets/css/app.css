@@ -585,3 +585,12 @@ body{
   .st-big{font-size:25px}
   .st-chips{padding:10px 12px 4px}
 }
+
+/* The numbers stay reachable as text for screen readers, printing and
+   colour-blind readers - but as a quiet link, not a table competing with
+   the chart for attention. */
+.st-alt{
+  display:block;margin:10px auto 0;background:none;border:0;cursor:pointer;
+  font-size:11.5px;font-weight:600;color:var(--text-3);padding:4px 8px;border-radius:8px
+}
+.st-alt:hover{color:var(--text-2);background:rgba(16,24,40,.04)}

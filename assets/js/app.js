@@ -491,7 +491,6 @@ function statsCard() {
       '<h3>Statistics</h3>' +
       '<span class="tiny muted">leads received</span>' +
       '<div class="spacer"></div>' +
-      '<button class="btn btn-sm" data-act="stat-table">' + (statTable ? 'Chart' : 'Table') + '</button>' +
       '<div class="seg">' + modeBtn('days', 'Days') + modeBtn('weeks', 'Weeks') + modeBtn('months', 'Months') + '</div>' +
     '</div>' +
     '<div class="st-chips">' + chipHtml + '</div>' +
@@ -510,6 +509,8 @@ function statsCard() {
       '</div>' +
       (statTable ? statTableHtml(s)
         : '<div class="st-plot">' + statChartSvg(s) + '<div class="st-tip" style="display:none"></div></div>') +
+      '<button class="st-alt" data-act="stat-table">' +
+        (statTable ? '&#8592; Back to the chart' : 'Read the numbers instead') + '</button>' +
     '</div></div>';
 }
 
