@@ -542,6 +542,23 @@ function teamMember(emailOrName) {
          team.find(t => String(t.name || '').trim().toLowerCase() === k) || null;
 }
 
+/** Hand every task from one form to somebody.
+    Assigning a form only decides who gets its FUTURE leads, so the leads
+    already sitting in the queue keep their original owner - this moves them.
+    @returns how many tasks changed hands */
+async function reassignFormTasks(formId, owner, ownerEmail, includeDone) {
+  const email = String(ownerEmail || '').toLowerCase();
+  const ops = [];
+  (DB.tasks || []).forEach(t => {
+    if (t.formId !== formId) return;
+    if (!includeDone && t.done) return;
+    if (String(t.ownerEmail || '').toLowerCase() === email && (t.owner || '') === (owner || '')) return;
+    ops.push({ op: 'patch', coll: 'tasks', id: t.id, data: { owner: owner || '', ownerEmail: email } });
+  });
+  if (ops.length) await B.batch(ops);
+  return ops.length;
+}
+
 /** fill in ownerEmail on tasks assigned by name before emails were stored.
     Returns how many it could match; leaves the rest alone. */
 async function linkTaskOwners() {
@@ -587,6 +604,6 @@ window.Store = {
   saveForm, deleteForm, blankForm, submitForm,
   moveOpp, updateOpp, deleteOpp, addOppManual,
   toggleTask, snoozeTask, addTask, deleteTask, assignTask,
-  addTeam, removeTeam, renameTeam, teamName, teamMember, linkTaskOwners,
+  addTeam, removeTeam, renameTeam, teamName, teamMember, linkTaskOwners, reassignFormTasks,
   saveOrg, exportJson, importJson, seedRemote, resetAll, wipeRecords
 };

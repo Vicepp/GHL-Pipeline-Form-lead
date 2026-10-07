@@ -637,6 +637,25 @@ function viewFormLeads(id) {
     '</span><br><br><button class="btn btn-sm btn-gold" data-act="form-share" data-id="' + f.id + '">' +
     (isGhl ? 'Show the webhook URL' : 'Get the form link') + '</button></div></td></tr>';
 
+  /* assigning a form only routes its FUTURE leads, so say plainly when the
+     ones already here belong to somebody else, and offer to move them */
+  const assignee = f.assignToEmail ? S.teamMember(f.assignToEmail) : null;
+  const openHere = d.tasks.filter(t => t.formId === id && !t.done);
+  const notTheirs = openHere.filter(t =>
+    String(t.ownerEmail || '').toLowerCase() !== String(f.assignToEmail || '').toLowerCase());
+  const mismatch = (assignee && notTheirs.length)
+    ? '<div class="card" style="margin-bottom:16px;border-left:3px solid var(--gold)"><div class="card-b">' +
+        '<div class="tiny"><b>This form is assigned to ' + esc(assignee.name || assignee.email) + ', but ' +
+        notTheirs.length + ' task' + (notTheirs.length === 1 ? '' : 's') + ' already here ' +
+        (notTheirs.length === 1 ? 'belongs' : 'belong') + ' to someone else.</b> ' +
+        'Assigning a form only decides who gets its future leads &mdash; it does not move the ones ' +
+        'that already arrived, so they stay with whoever had them.</div>' +
+        '<div style="margin-top:10px"><button class="btn btn-sm btn-gold" data-act="form-reassign" data-id="' + f.id + '">' +
+        'Move ' + notTheirs.length + ' open task' + (notTheirs.length === 1 ? '' : 's') + ' to ' +
+        esc(assignee.name || assignee.email) + '</button></div>' +
+      '</div></div>'
+    : '';
+
   shell('forms',
     title(f.name, (isGhl ? 'Receives from GoHighLevel' : 'Hosted here') + ' &middot; leads land in <b>' +
       esc((S.pipeline(f.pipelineId) || {}).name || 'not routed') + ' &rarr; ' +
@@ -644,6 +663,7 @@ function viewFormLeads(id) {
     '<a class="btn btn-sm" href="#/forms">All forms</a>' +
     '<button class="btn btn-sm" data-act="form-share" data-id="' + f.id + '">' + (isGhl ? 'Webhook' : 'Share') + '</button>' +
     '<a class="btn btn-sm btn-primary" href="#/forms/' + f.id + '">Edit form</a>',
+    mismatch +
     '<div class="kpis">' +
       kpi('Submissions', people.length, 'through this form', true) +
       kpi('Last 7 days', week, people.length ? 'most recent ' + ago(sorted[0] ? sorted[0].createdAt : new Date()) : 'none yet') +
@@ -786,6 +806,15 @@ function assignablePeople() {
 }
 function assignSelect(f) {
   const people = assignablePeople();
+  /* an empty dropdown looks broken rather than unconfigured */
+  if (!people.length) {
+    return '<div class="card" style="border-left:3px solid var(--gold)"><div class="card-b tiny">' +
+      '<b>Nobody can be assigned yet.</b> Add your team under ' +
+      '<a href="#/settings" style="text-decoration:underline">Settings &rarr; Team</a> first &mdash; ' +
+      'that list is both who can sign in and who can be given work.' +
+      (f.assignTo ? '<br><br>This form says <b>' + esc(f.assignTo) + '</b>, who is not on the team, ' +
+        'so nobody sees those tasks under Mine.' : '') + '</div></div>';
+  }
   const cur = String(f.assignToEmail || '').toLowerCase();
   /* a form assigned by name before emails were stored still shows correctly */
   const legacy = !cur && f.assignTo ? S.teamMember(f.assignTo) : null;
@@ -1303,6 +1332,34 @@ document.addEventListener('click', e => {
     }
     case 'form-open': closeModal(); location.hash = '#/f/' + id; return;
     case 'form-share': dlgShareForm(id); return;
+    case 'form-reassign': {
+      const fm = S.form(id);
+      const people = assignablePeople();
+      const cur = String(fm.assignToEmail || '').toLowerCase();
+      const n = S.db().tasks.filter(x => x.formId === id && !x.done).length;
+      openModal({
+        title: 'Move this form’s open tasks',
+        body: '<p class="tiny muted" style="margin-top:0">' + n + ' open task' + (n === 1 ? '' : 's') +
+            ' from <b>' + esc(fm.name) + '</b>. Completed tasks are left alone.</p>' +
+          '<div style="display:flex;gap:7px;flex-wrap:wrap">' +
+          people.map(p => '<button class="btn btn-sm ' + (p.email === cur ? 'btn-gold' : '') +
+            '" data-act="form-reassign-go" data-id="' + id + '" data-email="' + esc(p.email) + '">' +
+            esc(p.name) + (p.email === cur ? ' (this form’s assignee)' : '') + '</button>').join('') +
+          '<button class="btn btn-sm" data-act="form-reassign-go" data-id="' + id + '" data-email="">Nobody</button>' +
+          '</div>',
+        footer: '<button class="btn" data-act="modal-close">Cancel</button>'
+      });
+      return;
+    }
+    case 'form-reassign-go': {
+      const em = t.dataset.email || '';
+      const m = em ? S.teamMember(em) : null;
+      closeModal();
+      go(S.reassignFormTasks(id, m ? (m.name || em.split('@')[0]) : '', em)
+        .then(n => toast(n ? 'Moved ' + n + ' task' + (n === 1 ? '' : 's') +
+          (em ? ' to ' + (m ? m.name : em) : ' to nobody') : 'Nothing to move', 'ok')));
+      return;
+    }
     case 'secret-save': {
       const el = document.getElementById('secretIn');
       const v = el ? el.value.trim() : '';
