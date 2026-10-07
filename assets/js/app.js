@@ -76,9 +76,22 @@ function me() {
   const name = S.teamName(email) || email.split('@')[0].replace(/^./, c => c.toUpperCase());
   return { email, name, initials: initialsOf(name) };
 }
-/** does this task belong to the given person? names are the assignment key */
-const ownedBy = (task, who) =>
-  !!who && String(task.owner || '').trim().toLowerCase() === who.name.trim().toLowerCase();
+/** Does this task belong to the given person?
+    Email is the key: display names can be edited, and matching on them alone
+    would hand someone's queue to whoever inherited the name. Rows assigned
+    before emails were recorded still match by name so nothing is stranded. */
+function ownedBy(task, who) {
+  if (!who || !task) return false;
+  const te = String(task.ownerEmail || '').trim().toLowerCase();
+  if (te) return te === who.email;
+  const tn = String(task.owner || '').trim().toLowerCase();
+  if (!tn) return false;
+  if (tn === String(who.name || '').trim().toLowerCase()) return true;
+  /* the name may belong to this person's team row even if their display
+     name has since been changed */
+  const m = S.teamMember(tn);
+  return !!m && String(m.email || '').toLowerCase() === who.email;
+}
 const greeting = () => {
   const h = new Date().getHours();
   return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
@@ -672,7 +685,9 @@ function viewFormBuilder(id) {
         '</select></label></div>' +
       '<div class="row">' +
         '<label class="f"><span>Tags to apply</span><input class="inp" data-fb="tags" value="' + esc((f.tags || []).join(', ')) + '" placeholder="investor, webinar"></label>' +
-        '<label class="f"><span>Assign follow-up to</span><input class="inp" data-fb="assignTo" value="' + esc(f.assignTo || '') + '" placeholder="Chris" list="owners"></label></div>' +
+        '<label class="f"><span>Assign follow-up to</span>' + assignSelect(f) +
+          '<span class="tiny muted" style="font-weight:400">Linked to their login, so the task appears ' +
+          'under <b>Mine</b> the moment they sign in.</span></label></div>' +
       '<div class="row">' +
         '<label class="f"><span>Follow-up task title</span><input class="inp" data-fb="taskTemplate" value="' + esc(f.taskTemplate || '') + '" placeholder="Call {{name}} - new lead"></label>' +
         '<label class="f"><span>Task due in (days)</span><input class="inp" type="number" min="0" max="60" data-fb="taskDueDays" value="' + esc(f.taskDueDays) + '"></label></div>' +
@@ -761,6 +776,29 @@ function viewFormBuilder(id) {
         '&ldquo;Form Submitted&rdquo;. Nothing here reads or changes GHL opportunities or stages.</p>' : '') +
     '</div></div></div></div>');
 }
+/** who can be assigned work: the team allow-list, which is also who can log in */
+function assignablePeople() {
+  const team = (S.db().team || []).map(t => ({
+    email: String(t.email || t.id || '').toLowerCase(),
+    name: (t.name || '').trim() || String(t.email || t.id || '').split('@')[0]
+  })).filter(p => p.email);
+  return team.sort((a, b) => a.name.localeCompare(b.name));
+}
+function assignSelect(f) {
+  const people = assignablePeople();
+  const cur = String(f.assignToEmail || '').toLowerCase();
+  /* a form assigned by name before emails were stored still shows correctly */
+  const legacy = !cur && f.assignTo ? S.teamMember(f.assignTo) : null;
+  const sel = cur || (legacy ? String(legacy.email).toLowerCase() : '');
+  return '<select class="inp" data-fb="assignToEmail">' +
+    '<option value=""' + (sel ? '' : ' selected') + '>Nobody - leave unassigned</option>' +
+    people.map(p => '<option value="' + esc(p.email) + '"' + (p.email === sel ? ' selected' : '') + '>' +
+      esc(p.name) + ' - ' + esc(p.email) + '</option>').join('') +
+    (!sel && f.assignTo
+      ? '<option value="~name~" selected>' + esc(f.assignTo) + ' (not a team member)</option>' : '') +
+    '</select>';
+}
+
 function fieldRow(q, i, n) {
   return '<div class="fld" data-q="' + q.id + '"><div class="hd"><span class="idx">Q' + (i + 1) + '</span>' +
     '<span class="pill">' + esc((FIELD_TYPES.find(t => t[0] === q.type) || ['', q.type])[1]) + '</span>' +
@@ -788,6 +826,12 @@ function harvestDraft() {
     if (k === 'tags') draft.tags = el.value.split(',').map(s => s.trim()).filter(Boolean);
     else if (k === 'active') draft.active = el.checked;
     else if (k === 'allowDuplicates') draft.allowDuplicates = el.checked;
+    else if (k === 'assignToEmail') {
+      if (el.value === '~name~') return;            /* keep the legacy name as-is */
+      draft.assignToEmail = el.value;
+      const m = el.value ? S.teamMember(el.value) : null;
+      draft.assignTo = m ? (m.name || el.value.split('@')[0]) : '';
+    }
     else if (k === 'taskDueDays') draft.taskDueDays = Number(el.value) || 0;
     else draft[k] = el.value;
   });
@@ -914,6 +958,7 @@ function viewSettings() {
           ? 'Live in Cloud Firestore. Every team member sees the same boards in real time, and public form submissions land here instantly.'
           : 'Saved in this browser only (localStorage). Fill in <code>assets/js/config.js</code> to go live.') + '</p>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+          '<button class="btn" data-act="link-owners">Link tasks to logins</button>' +
           '<button class="btn" data-act="export">Export JSON</button>' +
           '<button class="btn" data-act="import">Import JSON</button>' +
           (liveMode() ? '<button class="btn" data-act="seed">Load demo pipelines</button>' : '') +
@@ -1136,8 +1181,11 @@ function dlgNewOpp(pid, sid) {
       '<div class="row"><label class="f"><span>Email</span><input class="inp" name="email"></label>' +
       '<label class="f"><span>Phone</span><input class="inp" name="phone"></label></div>' +
       '<div class="row"><label class="f"><span>Card title (optional)</span><input class="inp" name="title" placeholder="defaults to the name"></label>' +
-      '<label class="f"><span>Owner</span><input class="inp" name="owner" list="owners2" value="' + esc((d.org.owners || [])[0] || '') + '"></label></div>' +
-      '<datalist id="owners2">' + (d.org.owners || []).map(o => '<option>' + esc(o) + '</option>').join('') + '</datalist>' +
+      '<label class="f"><span>Owner</span><select class="inp" name="ownerEmail">' +
+        '<option value="">Nobody - leave unassigned</option>' +
+        assignablePeople().map(p => '<option value="' + esc(p.email) + '">' +
+          esc(p.name) + ' - ' + esc(p.email) + '</option>').join('') +
+      '</select></label></div>' +
       '<div class="tiny muted">Manual adds still create a follow-up task, same as a form submission.</div>',
     footer: '<button class="btn" data-act="modal-close">Cancel</button>' +
       '<button class="btn btn-gold" data-act="opp-create" data-pl="' + pid + '" data-stage="' + sid + '">Add</button>'
@@ -1225,10 +1273,13 @@ document.addEventListener('click', e => {
     case 'opp-new': dlgNewOpp(currentPipelineId(), t.dataset.stage); return;
     case 'opp-create': {
       const name = mVal('name'); if (!name) { toast('Name is required.', 'bad'); return; }
+      const ownerEmail = mVal('ownerEmail');
+      const om = ownerEmail ? S.teamMember(ownerEmail) : null;
       const payload = {
         pipelineId: t.dataset.pl, stageId: t.dataset.stage, name,
         email: mVal('email'), phone: mVal('phone'), title: mVal('title'),
-        value: mVal('value'), owner: mVal('owner')
+        value: mVal('value'),
+        owner: om ? (om.name || '') : '', ownerEmail: ownerEmail
       };
       closeModal(); go(S.addOppManual(payload), name + ' added');
       return;
@@ -1310,28 +1361,36 @@ document.addEventListener('click', e => {
     case 'task-assign': {
       const task = S.db().tasks.find(x => x.id === id);
       const who = me();
-      const people = Array.from(new Set(
-        (S.db().org.owners || []).concat((S.db().team || []).map(r => r.name).filter(Boolean))));
+      const people = assignablePeople();
+      const curEmail = String(task.ownerEmail || '').toLowerCase();
+      const isCur = (p) => curEmail ? p.email === curEmail
+        : String(task.owner || '').trim().toLowerCase() === p.name.trim().toLowerCase();
       openModal({
         title: 'Who is handling this?',
         body: '<p class="tiny muted" style="margin-top:0">' + esc(task.title) + '</p>' +
-          '<div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px">' +
-          (who ? '<button class="btn btn-sm btn-gold" data-act="task-assign-go" data-id="' + id +
-            '" data-owner="' + esc(who.name) + '">Assign to me</button>' : '') +
-          people.map(n => '<button class="btn btn-sm ' + (task.owner === n ? 'btn-primary' : '') +
-            '" data-act="task-assign-go" data-id="' + id + '" data-owner="' + esc(n) + '">' + esc(n) + '</button>').join('') +
-          '</div>' +
-          '<label class="f"><span>Or type a name</span><input class="inp" name="owner" value="' +
-            esc(task.owner || '') + '" placeholder="leave blank to unassign"></label>',
-        footer: '<button class="btn" data-act="modal-close">Cancel</button>' +
-          '<button class="btn btn-gold" data-act="task-assign-go" data-id="' + id + '">Save</button>'
+          (people.length
+            ? '<div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px">' +
+              (who ? '<button class="btn btn-sm btn-gold" data-act="task-assign-go" data-id="' + id +
+                '" data-email="' + esc(who.email) + '">Assign to me</button>' : '') +
+              people.map(p => '<button class="btn btn-sm ' + (isCur(p) ? 'btn-primary' : '') +
+                '" data-act="task-assign-go" data-id="' + id + '" data-email="' + esc(p.email) + '">' +
+                esc(p.name) + '</button>').join('') +
+              '<button class="btn btn-sm" data-act="task-assign-go" data-id="' + id +
+                '" data-email="">Nobody</button></div>' +
+              '<div class="tiny muted">Assigning links the task to that person’s login, so it shows ' +
+              'under <b>Mine</b> when they sign in — even if their display name changes later.</div>'
+            : '<div class="tiny muted">Nobody is on the team list yet. Add people under ' +
+              '<b>Settings → Team</b> and they can be assigned work here.</div>'),
+        footer: '<button class="btn" data-act="modal-close">Close</button>'
       });
       return;
     }
     case 'task-assign-go': {
-      const owner = t.dataset.owner !== undefined ? t.dataset.owner : mVal('owner');
+      const em = t.dataset.email || '';
+      const m = em ? S.teamMember(em) : null;
       closeModal();
-      go(S.assignTask(id, owner), owner ? 'Assigned to ' + owner : 'Unassigned');
+      go(S.assignTask(id, m ? (m.name || em.split('@')[0]) : '', em),
+        em ? 'Assigned to ' + (m ? m.name : em) : 'Unassigned');
       return;
     }
     case 'task-toggle': go(S.toggleTask(id)); return;
@@ -1397,6 +1456,16 @@ document.addEventListener('click', e => {
         owners: document.getElementById('orgOwners').value.split(',').map(s => s.trim()).filter(Boolean)
       };
       go(S.saveOrg(org), 'Saved'); return;
+    }
+    case 'link-owners': {
+      const loose = S.db().tasks.filter(x => !x.ownerEmail && x.owner).length;
+      if (!loose) { toast('Every assigned task is already linked to a login.', 'ok'); return; }
+      go(S.linkTaskOwners().then(n => {
+        toast(n ? 'Linked ' + n + ' of ' + loose + ' task' + (loose === 1 ? '' : 's') + ' to a login'
+                : 'No owner names matched a team member - check the names in Settings - Team',
+          n ? 'ok' : 'bad');
+      }));
+      return;
     }
     case 'export': {
       const blob = new Blob([S.exportJson()], { type: 'application/json' });

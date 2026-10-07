@@ -145,6 +145,7 @@ module.exports = async function handler(req, res) {
       form: form.name,
       willCreateIn: { pipeline: pipelineName, stage: stageLabel },
       assignsTo: form.assignTo || null,
+      assignsToLogin: form.assignToEmail || null,
       taskDueInDays: form.taskDueDays == null ? 1 : form.taskDueDays,
       questionsOnThisForm: (form.fields || []).map(f => f.label),
       storageMode: db.mode,
@@ -253,6 +254,9 @@ module.exports = async function handler(req, res) {
     contactId, formId: form.id, pipelineId: form.pipelineId,
     title: (form.taskTemplate || 'Reach out to {{name}}').replace('{{name}}', m.name),
     owner: form.assignTo || '',
+    /* the durable link to a login, so the task lands in that person's
+       "Mine" queue even if their display name is edited later */
+    ownerEmail: String(form.assignToEmail || '').toLowerCase(),
     dueAt: dayShift(Number(form.taskDueDays) || 1),
     done: false, doneAt: null, createdAt: created
   };

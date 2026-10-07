@@ -72,7 +72,7 @@ function seedData() {
     id: 'fm_ghl_intake', source: 'ghl', name: 'GHL - Lead Intake',
     headline: '', blurb: '',
     pipelineId: investor.id, stageId: 'st_i1',
-    tags: ['ghl'], assignTo: 'Chris',
+    tags: ['ghl'], assignTo: 'Chris', assignToEmail: 'chris@phcinvest.com',
     taskTemplate: 'Call {{name}} - came in from GHL', taskDueDays: 1,
     active: true, createdAt: now(),
     fields: [
@@ -87,7 +87,7 @@ function seedData() {
     id: 'fm_investor', source: 'hosted', name: 'Investor Interest Form',
     headline: 'Invest with Pheenyx Capital',
     blurb: 'Tell us a little about your goals and an advisor will reach out within one business day.',
-    pipelineId: investor.id, stageId: 'st_i1', tags: ['investor', 'inbound'], assignTo: 'Chris',
+    pipelineId: investor.id, stageId: 'st_i1', tags: ['investor', 'inbound'], assignTo: 'Chris', assignToEmail: 'chris@phcinvest.com',
     taskTemplate: 'Call {{name}} - new investor enquiry', taskDueDays: 1, active: true, createdAt: now(),
     fields: [
       { id: 'q1', label: 'Full name', type: 'text', required: true, map: 'name', placeholder: 'Jane Investor' },
@@ -103,7 +103,7 @@ function seedData() {
   const fSeller = {
     id: 'fm_seller', source: 'hosted', name: 'Off-Market Deal Submission', headline: 'Submit a property',
     blurb: 'Send us the basics and our acquisitions team will underwrite it and come back with a number.',
-    pipelineId: acq.id, stageId: 'st_a1', tags: ['seller', 'off-market'], assignTo: 'Acquisitions',
+    pipelineId: acq.id, stageId: 'st_a1', tags: ['seller', 'off-market'], assignTo: 'Isaiah', assignToEmail: 'isaiah@phcinvest.com',
     taskTemplate: 'Underwrite {{name}} submission', taskDueDays: 2, active: true, createdAt: now(),
     fields: [
       { id: 'q1', label: 'Your name', type: 'text', required: true, map: 'name' },
@@ -169,6 +169,7 @@ function seedData() {
     out.tasks.push({
       id: uid('tk'), contactId: c.id, formId: form.id, pipelineId: form.pipelineId,
       title: form.taskTemplate.replace('{{name}}', name), owner: form.assignTo,
+      ownerEmail: form.assignToEmail || '',
       dueAt: dayShift(dayOff + form.taskDueDays), done: taskDone,
       doneAt: taskDone ? dayShift(dayOff + 1) : null, createdAt: created
     });
@@ -407,7 +408,7 @@ function blankForm() {
     source: 'hosted',
     name: '', headline: '', blurb: '',
     pipelineId: p ? p.id : null, stageId: p && p.stages[0] ? p.stages[0].id : null,
-    tags: [], assignTo: (DB.org.owners || [])[0] || '', taskTemplate: 'Reach out to {{name}}',
+    tags: [], assignTo: '', assignToEmail: '', taskTemplate: 'Reach out to {{name}}',
     taskDueDays: 1, active: true,
     /* true  = every submission creates its own lead, even a repeat
        false = a repeat of the SAME payload within 5 minutes is treated as
@@ -450,7 +451,11 @@ async function submitForm(formId, answers) {
   const t = {
     id: uid('tk'), contactId: c.id, formId: f.id, pipelineId: f.pipelineId,
     title: (f.taskTemplate || 'Reach out to {{name}}').replace('{{name}}', name),
-    owner: f.assignTo || '', dueAt: dayShift(Number(f.taskDueDays) || 1),
+    owner: f.assignTo || '',
+    /* the email is the durable key - a display name can be edited, and
+       matching on it would silently orphan somebody's whole queue */
+    ownerEmail: (f.assignToEmail || '').toLowerCase(),
+    dueAt: dayShift(Number(f.taskDueDays) || 1),
     done: false, doneAt: null, createdAt: now()
   };
   const a = {
@@ -482,7 +487,7 @@ async function moveOpp(oppId, stageId) {
 const updateOpp = (id, patch) => B.patch('opportunities', id, Object.assign({}, patch, { updatedAt: now() }));
 const deleteOpp = (id) => B.del('opportunities', id);
 
-async function addOppManual({ pipelineId, stageId, name, email, phone, title, value, owner }) {
+async function addOppManual({ pipelineId, stageId, name, email, phone, title, value, owner, ownerEmail }) {
   const c = { id: uid('ct'), name, email: email || '', phone: phone || '', formId: null, tags: ['manual'], createdAt: now(), answers: {}, notes: '' };
   const o = {
     id: uid('op'), contactId: c.id, pipelineId, stageId, title: title || name,
@@ -490,7 +495,8 @@ async function addOppManual({ pipelineId, stageId, name, email, phone, title, va
   };
   const t = {
     id: uid('tk'), contactId: c.id, formId: null, pipelineId, title: 'Reach out to ' + name,
-    owner: owner || '', dueAt: dayShift(1), done: false, doneAt: null, createdAt: now()
+    owner: owner || '', ownerEmail: (ownerEmail || '').toLowerCase(),
+    dueAt: dayShift(1), done: false, doneAt: null, createdAt: now()
   };
   await B.batch([
     { op: 'put', coll: 'contacts', data: c },
@@ -507,16 +513,18 @@ async function toggleTask(id) {
   await B.patch('tasks', id, { done: !t.done, doneAt: !t.done ? now() : null });
 }
 const snoozeTask = (id, days) => B.patch('tasks', id, { dueAt: dayShift(days) });
-async function addTask(contactId, title, days, owner) {
+async function addTask(contactId, title, days, owner, ownerEmail) {
   const c = contact(contactId);
   const o = DB.opportunities.find(x => x.contactId === contactId);
   await B.put('tasks', {
     id: uid('tk'), contactId, formId: c ? c.formId : null, pipelineId: o ? o.pipelineId : null,
-    title, owner: owner || '', dueAt: dayShift(days || 1), done: false, doneAt: null, createdAt: now()
+    title, owner: owner || '', ownerEmail: (ownerEmail || '').toLowerCase(),
+    dueAt: dayShift(days || 1), done: false, doneAt: null, createdAt: now()
   });
 }
 const deleteTask = (id) => B.del('tasks', id);
-const assignTask = (id, owner) => B.patch('tasks', id, { owner: owner || '' });
+const assignTask = (id, owner, ownerEmail) =>
+  B.patch('tasks', id, { owner: owner || '', ownerEmail: (ownerEmail || '').toLowerCase() });
 
 /* ================================================================ team */
 async function addTeam(email, name) {
@@ -525,6 +533,28 @@ async function addTeam(email, name) {
 }
 const removeTeam = (id) => B.del('team', id);
 const renameTeam = (id, name) => B.patch('team', id, { name: name || '' });
+/** the team row for an email, or for a display name if that is all we have */
+function teamMember(emailOrName) {
+  const k = String(emailOrName || '').trim().toLowerCase();
+  if (!k) return null;
+  const team = DB.team || [];
+  return team.find(t => String(t.email || t.id || '').toLowerCase() === k) ||
+         team.find(t => String(t.name || '').trim().toLowerCase() === k) || null;
+}
+
+/** fill in ownerEmail on tasks assigned by name before emails were stored.
+    Returns how many it could match; leaves the rest alone. */
+async function linkTaskOwners() {
+  const ops = [];
+  (DB.tasks || []).forEach(t => {
+    if (t.ownerEmail || !t.owner) return;
+    const m = teamMember(t.owner);
+    if (m && m.email) ops.push({ op: 'patch', coll: 'tasks', id: t.id, data: { ownerEmail: String(m.email).toLowerCase() } });
+  });
+  if (ops.length) await B.batch(ops);
+  return ops.length;
+}
+
 /** the display name for a signed-in email, from the team allow-list */
 function teamName(email) {
   const key = String(email || '').toLowerCase();
@@ -557,6 +587,6 @@ window.Store = {
   saveForm, deleteForm, blankForm, submitForm,
   moveOpp, updateOpp, deleteOpp, addOppManual,
   toggleTask, snoozeTask, addTask, deleteTask, assignTask,
-  addTeam, removeTeam, renameTeam, teamName,
+  addTeam, removeTeam, renameTeam, teamName, teamMember, linkTaskOwners,
   saveOrg, exportJson, importJson, seedRemote, resetAll, wipeRecords
 };
