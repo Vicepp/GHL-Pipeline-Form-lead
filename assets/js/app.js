@@ -405,8 +405,11 @@ function taskRow(t) {
   const c = S.contact(t.contactId);
   const mine = ownedBy(t, me());
   const dl = dueLabel(t.dueAt);
-  const p = t.pipelineId ? S.pipeline(t.pipelineId) : null;
   const o = c ? S.db().opportunities.find(x => x.contactId === c.id) : null;
+  /* which form this person submitted - the task records it, but fall back to
+     the contact for anything created before that field existed */
+  const srcId = t.formId || (c && c.formId) || null;
+  const f = srcId ? S.form(srcId) : null;
   return '<div class="task ' + (t.done ? 'done' : '') + '">' +
     '<button class="chk" data-act="task-toggle" data-id="' + t.id + '" title="Mark done">&#10003;</button>' +
     '<div style="min-width:0"><div class="t-title">' + esc(t.title) + '</div><div class="t-meta">' +
@@ -415,7 +418,13 @@ function taskRow(t) {
         esc(fmtDateTime(arrivedAt(t))) + ' &middot; ' + ago(arrivedAt(t)) + '</span>' +
       (c && c.phone ? '<span class="muted">&middot; ' + esc(c.phone) + '</span>' : '') +
       (c && c.email ? '<span class="muted">&middot; ' + esc(c.email) + '</span>' : '') +
-      (p ? '<span class="pill">' + esc(p.name) + (o ? ' / ' + esc(S.stageName(o.pipelineId, o.stageId)) : '') + '</span>' : '') +
+      /* the form they submitted is the useful fact here; the pipeline name is
+         already implied by the board they are on */
+      (f
+        ? '<a href="#/forms/' + f.id + '/leads" title="See everyone who submitted this form">' +
+          '<span class="pill gold">&#9776; ' + esc(f.name) + '</span></a>'
+        : '<span class="pill">&#9998; added manually</span>') +
+      (o ? '<span class="pill info">' + esc(S.stageName(o.pipelineId, o.stageId)) + '</span>' : '') +
       (t.owner
         ? '<span class="pill ' + (mine ? 'gold' : '') + '">@' + esc(t.owner) + (mine ? ' &middot; you' : '') + '</span>'
         : '<span class="pill warn">unassigned</span>') +
