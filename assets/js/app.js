@@ -46,6 +46,19 @@ function ago(iso) {
   const d = Math.round(mins / 1440);
   return d === 1 ? 'yesterday' : d + 'd ago';
 }
+/** Back to the top, and back to the left - these boards scroll both ways.
+    Some engines ignore the options form of scrollTo and do nothing at all,
+    so check we actually moved and fall back to the two-argument form. */
+function scrollToTop() {
+  const was = window.scrollY;
+  try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) { window.scrollTo(0, 0); }
+  setTimeout(() => { if (window.scrollY === was && was > 0) window.scrollTo(0, 0); }, 220);
+  document.querySelectorAll('.orgmap,.board-wrap,.scroll-x').forEach(el => {
+    try { el.scrollTo({ left: 0, behavior: 'smooth' }); } catch (e) { /* older engines */ }
+    setTimeout(() => { if (el.scrollLeft > 0) el.scrollLeft = 0; }, 220);
+  });
+}
+
 function toast(msg, kind) {
   let box = document.querySelector('.toasts');
   if (!box) { box = document.createElement('div'); box.className = 'toasts'; document.body.appendChild(box); }
@@ -184,9 +197,6 @@ function shell(route, topbar, content) {
     '<a class="' + (route === n.r ? 'on' : '') + '" href="#/' + n.r + '">' +
     '<span class="ic">' + n.ic + '</span>' + n.label +
     (counts[n.r] ? '<span class="count">' + counts[n.r] + '</span>' : '') + '</a>').join('');
-  const pipeLinks = d.pipelines.map(p =>
-    '<a href="#/pipeline/' + p.id + '"><span class="ic" style="color:' + esc(p.color || '#8697b0') + '">&#9679;</span>' +
-    esc(p.name) + '<span class="count">' + S.oppsIn(p.id).length + '</span></a>').join('');
   const who = me();
   const myOpen = who ? d.tasks.filter(t => !t.done && ownedBy(t, who)).length : 0;
 
@@ -194,7 +204,7 @@ function shell(route, topbar, content) {
     '<div class="shell">' +
       '<aside class="sidebar">' +
         '<div class="brand"><div class="mark">P</div><div><b>' + esc(d.org.name) + '</b><span>' + esc(d.org.tagline) + '</span></div></div>' +
-        '<nav class="nav">' + nav + '<div class="nav-label">Your pipelines</div>' + pipeLinks + '</nav>' +
+        '<nav class="nav">' + nav + '</nav>' +
         '<div class="side-foot">' +
           '<button class="btn btn-sm" data-act="new-form">+ New form</button>' +
           '<button class="btn btn-sm" data-act="new-pipeline">+ New pipeline</button>' +
@@ -213,7 +223,8 @@ function shell(route, topbar, content) {
         '</div>' +
       '</aside>' +
       '<div class="main"><div class="topbar">' + topbar + '</div><div class="content">' + content + '</div></div>' +
-    '</div>';
+    '</div>' +
+    '<button class="to-top" data-act="to-top" title="Back to the top" aria-label="Back to the top">&#8593;</button>';
 }
 const title = (h, sub) => '<div><h1>' + esc(h) + '</h1>' + (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div><div class="spacer"></div>';
 
@@ -2236,6 +2247,7 @@ document.addEventListener('click', e => {
 
   switch (act) {
     case 'modal-close': closeModal(); return;
+    case 'to-top': scrollToTop(); return;
 
     /* auth */
     case 'auth-mode': authView = t.dataset.m; viewLogin(); return;
@@ -2689,6 +2701,11 @@ window.App = {
     started = true;
     const d = S.db();
     if (d.org && d.org.name) document.title = d.org.name + ' - ' + (d.org.tagline || 'Pipeline');
+    const toTop = () => {
+      const b = document.querySelector('.to-top');
+      if (b) b.classList.toggle('on', window.scrollY > 320);
+    };
+    window.addEventListener('scroll', toTop, { passive: true });
     S.onChange(() => {
       /* never redraw the sign-in form under someone's fingers */
       const onLogin = window.Auth && window.Auth.enabled && !window.Auth.user() &&
