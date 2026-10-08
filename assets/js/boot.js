@@ -132,7 +132,13 @@ function authMessage(code) {
       try { await sendPasswordResetEmail(auth, email.trim()); }
       catch (e) { throw new Error(authMessage(e.code)); }
     },
-    async signOut() { await signOut(auth); }
+    async signOut() { await signOut(auth); },
+    /* a short-lived ID token, so a server endpoint can prove who is asking
+       without us ever shipping a long-lived secret to the browser */
+    async token() {
+      const u = auth.currentUser;
+      return u ? await u.getIdToken() : null;
+    }
   };
 
   await window.Store.initFirebase({

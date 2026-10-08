@@ -594,3 +594,14 @@ body{
   font-size:11.5px;font-weight:600;color:var(--text-3);padding:4px 8px;border-radius:8px
 }
 .st-alt:hover{color:var(--text-2);background:rgba(16,24,40,.04)}
+
+/* ---------- webinars ---------- */
+.wb-pill{
+  border:0;cursor:pointer;border-radius:var(--r-pill);padding:4px 11px;
+  font-size:11px;font-weight:700;letter-spacing:.02em;color:#fff;
+  box-shadow:0 2px 8px rgba(16,24,40,.16);transition:filter .13s, transform .13s
+}
+.wb-pill:hover{filter:brightness(1.1);transform:translateY(-1px)}
+.wb-mxl{background:linear-gradient(145deg,#3366cc,#27509f)}
+.wb-phx{background:linear-gradient(145deg,#b8860b,#8c6508)}
+.wb-unk{background:linear-gradient(145deg,#8896ab,#6b7a90)}

@@ -170,6 +170,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal()
 const NAV = [
   { r: 'dashboard', label: 'Dashboard', ic: '▦' },
   { r: 'analytics', label: 'Analytics', ic: '◔' },
+  { r: 'webinars', label: 'Webinars', ic: '▶' },
   { r: 'pipelines', label: 'Pipelines', ic: '⌸' },
   { r: 'forms', label: 'Forms', ic: '☰' },
   { r: 'contacts', label: 'Contacts', ic: '☺' },
@@ -886,6 +887,270 @@ function viewForms() {
       '<tr><td colspan="7"><div class="empty"><div class="big">&#9776;</div>No forms yet.<br><br>' +
       '<button class="btn btn-gold" data-act="new-form">+ Create your first form</button></div></td></tr>') +
     '</tbody></table></div></div>');
+}
+
+/* ========================== WEBINARS ==========================
+   ClickMeeting topics, their runs, and who actually turned up.
+   Everything comes through /api/clickmeeting - the ClickMeeting key
+   stays on the server, and the endpoint checks the caller's Firebase
+   token against the team list before answering.                     */
+
+const WB_BRANDS = {
+  mxl: { label: 'MXL', full: 'My Expansive Life', cls: 'wb-mxl' },
+  phx: { label: 'Pheenyx', full: 'Pheenyx Capital', cls: 'wb-phx' },
+  unknown: { label: 'Unsorted', full: 'Not classified yet', cls: 'wb-unk' }
+};
+
+let wbTopics = null;      /* loaded topic list */
+let wbError = null;
+let wbLoading = false;
+let wbBrand = 'all';      /* all | mxl | phx | unknown */
+let wbWhen = 'all';       /* all | upcoming | past */
+let wbRuns = {};          /* topicKey -> { loading, error, runs, agg, filter } */
+
+const wbBrandOverrides = () => (S.db().org && S.db().org.webinarBrands) || {};
+
+async function wbFetch(params) {
+  const token = window.Auth && window.Auth.token ? await window.Auth.token() : null;
+  if (!token) throw new Error('Sign in to load webinars.');
+  const r = await fetch('/api/clickmeeting?' + params, { headers: { Authorization: 'Bearer ' + token } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.ok) throw new Error(j.error || ('Request failed (' + r.status + ')'));
+  return j;
+}
+
+async function wbLoadTopics(force) {
+  if (wbTopics && !force) return;
+  wbLoading = true; wbError = null; render();
+  try {
+    const j = await wbFetch('action=list&overrides=' + encodeURIComponent(JSON.stringify(wbBrandOverrides())));
+    wbTopics = j.topics; wbError = null;
+  } catch (e) {
+    wbError = e.message; wbTopics = null;
+  }
+  wbLoading = false; render();
+}
+
+/** merge every run of a topic into one list of people */
+function wbAggregate(runs) {
+  const by = {};
+  let registered = 0, attended = 0, noShow = 0, walkIns = 0;
+  (runs || []).forEach(run => {
+    registered += run.registered || 0;
+    attended += run.attended || 0;
+    noShow += run.noShow || 0;
+    walkIns += run.walkIns || 0;
+    (run.people || []).forEach(p => {
+      const k = p.email;
+      if (!by[k]) by[k] = Object.assign({}, p, { times: 0, attendedTimes: 0, minutes: 0 });
+      by[k].times++;
+      if (p.attended) { by[k].attendedTimes++; by[k].attended = true; }
+      by[k].minutes += p.minutes || 0;
+      if (!by[k].name || by[k].name === k) by[k].name = p.name;
+      if (p.registeredAt && !by[k].registeredAt) by[k].registeredAt = p.registeredAt;
+    });
+  });
+  const people = Object.keys(by).map(k => by[k])
+    .sort((a, b) => (b.attendedTimes - a.attendedTimes) || (b.minutes - a.minutes) ||
+      String(a.name).localeCompare(String(b.name)));
+  const uniqAttended = people.filter(p => p.attended).length;
+  return { people, registered, attended, noShow, walkIns, uniqAttended,
+    rate: registered ? Math.round((registered - noShow) / registered * 100) : 0 };
+}
+
+async function wbLoadRuns(topic, force) {
+  const st = wbRuns[topic.key];
+  if (st && st.runs && !force) return;
+  wbRuns[topic.key] = { loading: true, error: null, runs: null, filter: (st && st.filter) || 'all' };
+  render();
+  try {
+    const ids = topic.runs.slice(0, 20).map(r => r.id).join(',');
+    const j = await wbFetch('action=runs&ids=' + ids);
+    wbRuns[topic.key] = { loading: false, error: null, runs: j.runs,
+      agg: wbAggregate(j.runs), truncated: j.truncated,
+      filter: (st && st.filter) || 'all' };
+  } catch (e) {
+    wbRuns[topic.key] = { loading: false, error: e.message, runs: null, filter: 'all' };
+  }
+  render();
+}
+
+const wbPill = (brand, key) =>
+  '<button class="wb-pill ' + (WB_BRANDS[brand] || WB_BRANDS.unknown).cls + '" ' +
+  'data-act="wb-brand" data-key="' + esc(key) + '" title="Click to change which brand this belongs to">' +
+  esc((WB_BRANDS[brand] || WB_BRANDS.unknown).label) + '</button>';
+
+function wbFilters() {
+  const b = (v, label) => '<button class="seg-btn ' + (wbBrand === v ? 'on' : '') +
+    '" data-act="wb-brand-filter" data-v="' + v + '">' + label + '</button>';
+  const w = (v, label) => '<button class="seg-btn ' + (wbWhen === v ? 'on' : '') +
+    '" data-act="wb-when" data-v="' + v + '">' + label + '</button>';
+  return '<div class="seg">' + b('all', 'All') + b('mxl', 'MXL') + b('phx', 'Pheenyx') + b('unknown', 'Unsorted') + '</div>' +
+    '<div class="seg">' + w('all', 'All') + w('upcoming', 'Upcoming') + w('past', 'Past') + '</div>';
+}
+
+function wbVisibleTopics() {
+  return (wbTopics || []).filter(t => {
+    if (wbBrand !== 'all' && t.brand !== wbBrand) return false;
+    if (wbWhen === 'upcoming' && !t.upcoming) return false;
+    if (wbWhen === 'past' && t.upcoming === t.count) return false;
+    return true;
+  });
+}
+
+function viewWebinars() {
+  if (!wbTopics && !wbLoading && !wbError) { wbLoadTopics(); }
+
+  const list = wbVisibleTopics();
+  const all = wbTopics || [];
+  const runsTotal = all.reduce((a, t) => a + t.count, 0);
+  const upcoming = all.reduce((a, t) => a + t.upcoming, 0);
+  const byBrand = { mxl: 0, phx: 0, unknown: 0 };
+  all.forEach(t => { byBrand[t.brand] = (byBrand[t.brand] || 0) + t.count; });
+
+  const body = wbLoading
+    ? '<div class="card"><div class="empty">Loading webinars from ClickMeeting&hellip;</div></div>'
+    : wbError
+      ? '<div class="card"><div class="card-b">' +
+        '<div class="tiny" style="color:var(--bad);font-weight:600;margin-bottom:8px">' + esc(wbError) + '</div>' +
+        '<div class="tiny muted">The webinar list comes from <code>/api/clickmeeting</code>, which needs ' +
+        '<code>CLICKMEETING_API_KEY</code> set in Vercel and a signed-in team member. ' +
+        'It cannot run on local demo data.</div>' +
+        '<button class="btn btn-sm btn-gold" style="margin-top:12px" data-act="wb-reload">Try again</button>' +
+        '</div></div>'
+      : '<div class="kpis">' +
+          kpi('Topics', all.length, runsTotal + ' sessions run in total', true) +
+          kpi('Upcoming', upcoming, upcoming ? 'scheduled ahead' : 'nothing scheduled') +
+          kpi('MXL sessions', byBrand.mxl || 0, 'My Expansive Life') +
+          kpi('Pheenyx sessions', byBrand.phx || 0, 'Pheenyx Capital') +
+        '</div>' +
+        '<div class="card"><div class="card-h"><h3>Webinar topics</h3><div class="spacer"></div>' + wbFilters() + '</div>' +
+        '<div class="scroll-x"><table class="tbl"><thead><tr>' +
+        '<th>Topic</th><th>Brand</th><th>Sessions</th><th>First</th><th>Latest</th><th></th>' +
+        '</tr></thead><tbody>' +
+        (list.length ? list.map(t =>
+          '<tr><td><div class="n"><a href="#/webinars/' + encodeURIComponent(t.key) + '">' + esc(t.name) + '</a></div>' +
+            (t.upcoming ? '<span class="pill ok"><span class="dot"></span>' + t.upcoming + ' upcoming</span> ' : '') +
+            (!t.confident && !t.overridden
+              ? '<span class="pill warn" title="The title mentions both sides - check the brand">unsure</span>' : '') +
+            (t.overridden ? '<span class="pill">set by you</span>' : '') + '</td>' +
+          '<td>' + wbPill(t.brand, t.key) + '</td>' +
+          '<td><b>' + t.count + '</b></td>' +
+          '<td class="tiny muted">' + (t.first ? fmtDate(t.first) : '-') + '</td>' +
+          '<td class="tiny muted">' + (t.last ? fmtDate(t.last) : '-') + '</td>' +
+          '<td><a class="btn btn-sm" href="#/webinars/' + encodeURIComponent(t.key) + '">Open</a></td></tr>').join('')
+          : '<tr><td colspan="6"><div class="empty">No topics match this filter.</div></td></tr>') +
+        '</tbody></table></div></div>';
+
+  shell('webinars',
+    title('Webinars', wbTopics
+      ? all.length + ' topics across ' + runsTotal + ' sessions &middot; MXL is LinkedIn and career, Pheenyx is investing'
+      : 'From ClickMeeting') +
+    (wbTopics ? '<button class="btn btn-sm" data-act="wb-reload">Refresh</button>' : ''),
+    body);
+}
+
+function viewWebinarTopic(key) {
+  if (!wbTopics && !wbLoading && !wbError) { wbLoadTopics(); }
+  const topic = (wbTopics || []).find(t => t.key === key);
+  if (!wbTopics) {
+    shell('webinars', title('Webinar', 'Loading&hellip;') + '<a class="btn btn-sm" href="#/webinars">All webinars</a>',
+      '<div class="card"><div class="empty">' + (wbError ? esc(wbError) : 'Loading&hellip;') + '</div></div>');
+    return;
+  }
+  if (!topic) { location.hash = '#/webinars'; return; }
+
+  const st = wbRuns[topic.key];
+  if (!st) { wbLoadRuns(topic); }
+  const agg = st && st.agg;
+  const filter = (st && st.filter) || 'all';
+
+  const peopleRows = agg ? agg.people.filter(p =>
+    filter === 'all' ? true : filter === 'attended' ? p.attended : !p.attended) : [];
+
+  const fBtn = (v, label, n) => '<button class="seg-btn ' + (filter === v ? 'on' : '') +
+    '" data-act="wb-people-filter" data-key="' + esc(topic.key) + '" data-v="' + v + '">' +
+    label + '<b>' + n + '</b></button>';
+
+  const detail = st && st.loading
+    ? '<div class="card"><div class="empty">Reading registrations and attendance from ClickMeeting&hellip;<br>' +
+      '<span class="tiny">' + Math.min(topic.count, 20) + ' session' +
+      (Math.min(topic.count, 20) === 1 ? '' : 's') + ' to fetch.</span></div></div>'
+    : st && st.error
+      ? '<div class="card"><div class="card-b"><div class="tiny" style="color:var(--bad);font-weight:600">' +
+        esc(st.error) + '</div><button class="btn btn-sm btn-gold" style="margin-top:10px" ' +
+        'data-act="wb-runs-reload" data-key="' + esc(topic.key) + '">Try again</button></div></div>'
+      : agg
+        ? '<div class="kpis">' +
+            kpi('Registered', agg.registered, 'across ' + (st.runs || []).length + ' session' +
+              ((st.runs || []).length === 1 ? '' : 's'), true) +
+            kpi('Turned up', agg.registered - agg.noShow, agg.rate + '% of registrations') +
+            kpi('No-shows', agg.noShow, 'registered but did not attend') +
+            kpi('Unique people', agg.people.length, agg.walkIns ? agg.walkIns + ' attended without registering' : 'no walk-ins') +
+          '</div>' +
+          (st.truncated ? '<div class="card" style="margin-bottom:14px;border-left:3px solid var(--gold)">' +
+            '<div class="card-b tiny">This topic has run ' + topic.count + ' times. Showing the 20 most recent, ' +
+            'so ClickMeeting is not hammered with hundreds of calls at once.</div></div>' : '') +
+          '<div class="card"><div class="card-h"><h3>Who came</h3><div class="spacer"></div>' +
+          '<div class="seg">' + fBtn('all', 'Everyone', agg.people.length) +
+            fBtn('attended', 'Attended', agg.people.filter(p => p.attended).length) +
+            fBtn('no', 'Did not', agg.people.filter(p => !p.attended).length) + '</div></div>' +
+          '<div class="scroll-x"><table class="tbl"><thead><tr>' +
+          '<th>Name</th><th>Email</th><th>Status</th><th>Watched</th><th>Sessions</th><th>Where</th>' +
+          '</tr></thead><tbody>' +
+          (peopleRows.length ? peopleRows.map(p =>
+            '<tr><td><div class="n">' + esc(p.name || p.email) + '</div>' +
+              (p.walkIn ? '<span class="pill">walk-in</span>' : '') + '</td>' +
+            '<td class="tiny"><a href="mailto:' + esc(p.email) + '">' + esc(p.email) + '</a></td>' +
+            '<td>' + (p.attended
+              ? '<span class="pill ok"><span class="dot"></span>attended</span>'
+              : '<span class="pill bad">did not attend</span>') + '</td>' +
+            '<td class="tiny">' + (p.minutes ? p.minutes + ' min' : '-') + '</td>' +
+            '<td class="tiny">' + (p.attendedTimes || 0) + ' of ' + (p.times || 1) + '</td>' +
+            '<td class="tiny muted">' + esc([p.city, p.country].filter(Boolean).join(', ') || '-') + '</td></tr>').join('')
+            : '<tr><td colspan="6"><div class="empty">Nobody in this group.</div></td></tr>') +
+          '</tbody></table></div></div>' +
+          '<div class="card" style="margin-top:16px"><div class="card-h"><h3>Each session</h3></div>' +
+          '<div class="scroll-x"><table class="tbl"><thead><tr>' +
+          '<th>When</th><th>Registered</th><th>Attended</th><th>No-shows</th><th>Rate</th>' +
+          '</tr></thead><tbody>' +
+          (st.runs || []).map(r => {
+            const run = topic.runs.find(x => String(x.id) === String(r.id)) || {};
+            return '<tr><td class="tiny">' + (run.startsAt ? esc(fmtDateTime(run.startsAt)) : r.id) + '</td>' +
+              '<td>' + r.registered + '</td><td><b>' + (r.registered - r.noShow) + '</b></td>' +
+              '<td>' + r.noShow + '</td><td>' + r.rate + '%</td></tr>';
+          }).join('') +
+          '</tbody></table></div></div>'
+        : '<div class="card"><div class="empty">Attendance not loaded yet.<br><br>' +
+          '<button class="btn btn-gold" data-act="wb-runs-reload" data-key="' + esc(topic.key) +
+          '">Load attendance</button></div></div>';
+
+  shell('webinars',
+    title(topic.name,
+      (WB_BRANDS[topic.brand] || WB_BRANDS.unknown).full + ' &middot; ' + topic.count + ' session' +
+      (topic.count === 1 ? '' : 's') +
+      (topic.first ? ' &middot; ' + fmtDate(topic.first) + ' to ' + fmtDate(topic.last) : '')) +
+    '<a class="btn btn-sm" href="#/webinars">All webinars</a>' +
+    wbPill(topic.brand, topic.key) +
+    '<button class="btn btn-sm" data-act="wb-runs-reload" data-key="' + esc(topic.key) + '">Refresh</button>',
+    detail);
+}
+
+function dlgWebinarBrand(key) {
+  const t = (wbTopics || []).find(x => x.key === key);
+  if (!t) return;
+  openModal({
+    title: 'Which brand ran this?',
+    body: '<p class="tiny muted" style="margin-top:0">' + esc(t.name) + '</p>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">' +
+      ['mxl', 'phx', 'unknown'].map(b => '<button class="btn btn-sm ' + (t.brand === b ? 'btn-primary' : '') +
+        '" data-act="wb-brand-set" data-key="' + esc(key) + '" data-v="' + b + '">' +
+        esc(WB_BRANDS[b].full) + '</button>').join('') + '</div>' +
+      '<div class="tiny muted">Guessed <b>' + esc(WB_BRANDS[t.autoBrand || 'unknown'].label) + '</b> from the title' +
+      (t.mxl !== undefined ? ' (' + t.mxl + ' MXL terms, ' + t.phx + ' Pheenyx terms)' : '') + '. ' +
+      'Your choice is saved for everyone and sticks to this topic, including future runs of it.</div>',
+    footer: '<button class="btn" data-act="modal-close">Cancel</button>'
+  });
 }
 
 /* ===================== FORMS MAP (org-chart view) ===================== */
@@ -1890,6 +2155,35 @@ document.addEventListener('click', e => {
       return;
     }
 
+    /* webinars */
+    case 'wb-reload': wbTopics = null; wbRuns = {}; wbLoadTopics(true); return;
+    case 'wb-brand-filter': wbBrand = t.dataset.v; render(); return;
+    case 'wb-when': wbWhen = t.dataset.v; render(); return;
+    case 'wb-brand': dlgWebinarBrand(t.dataset.key); return;
+    case 'wb-brand-set': {
+      const k = t.dataset.key, v = t.dataset.v;
+      const org = JSON.parse(JSON.stringify(S.db().org || {}));
+      org.webinarBrands = org.webinarBrands || {};
+      if (v === 'unknown') delete org.webinarBrands[k]; else org.webinarBrands[k] = v;
+      closeModal();
+      go(S.saveOrg(org).then(() => {
+        const topic = (wbTopics || []).find(x => x.key === k);
+        if (topic) { topic.brand = v; topic.overridden = v !== 'unknown'; }
+        render();
+      }), 'Saved for the whole team');
+      return;
+    }
+    case 'wb-people-filter': {
+      const st = wbRuns[t.dataset.key];
+      if (st) { st.filter = t.dataset.v; render(); }
+      return;
+    }
+    case 'wb-runs-reload': {
+      const topic = (wbTopics || []).find(x => x.key === t.dataset.key);
+      if (topic) wbLoadRuns(topic, true);
+      return;
+    }
+
     /* statistics */
     case 'stat-mode': setStatMode(t.dataset.v); statAnchor = null; render(); return;
     case 'go-analytics': location.hash = '#/analytics'; return;
@@ -2089,6 +2383,10 @@ function render() {
   switch (parts[0]) {
     case 'dashboard': viewDashboard(); break;
     case 'analytics': viewAnalytics(); break;
+    case 'webinars':
+      if (parts[1]) viewWebinarTopic(decodeURIComponent(parts[1]));
+      else viewWebinars();
+      break;
     case 'pipelines': viewPipelines(); break;
     case 'pipeline': viewBoard(parts[1]); break;
     case 'forms':

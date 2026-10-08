@@ -4,7 +4,7 @@
   "private": true,
   "description": "Pheenyx Capital pipeline workflow - forms feed pipelines. Static front end plus one serverless endpoint for GoHighLevel inbound webhooks.",
   "scripts": {
-    "test": "node test/normalize.test.js",
+    "test": "node test/normalize.test.js && node test/webinars.test.js",
     "start": "python -m http.server 8080"
   },
   "dependencies": {
