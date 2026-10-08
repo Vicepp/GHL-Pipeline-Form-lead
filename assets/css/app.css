@@ -617,3 +617,20 @@ body{
 .wb-caret{opacity:.7;font-size:9px;margin-left:1px}
 .wb-wait{display:inline-block;width:14px;color:var(--text-3);animation:wbpulse 1s ease-in-out infinite}
 @keyframes wbpulse{0%,100%{opacity:.35}50%{opacity:1}}
+
+/* every attendee is listed, so each column scrolls on its own rather than
+   stretching the page to the height of the busiest webinar */
+#wbmap .om-people{max-height:min(62vh,640px);overflow-y:auto;padding-right:3px}
+#wbmap .om-people::-webkit-scrollbar{width:7px}
+#wbmap .om-people::-webkit-scrollbar-thumb{background:rgba(16,24,40,.18);border-radius:99px}
+#wbmap .wb-colsum{position:sticky;bottom:0;background:rgba(255,255,255,.92);backdrop-filter:blur(4px)}
+
+/* attended / did-not-attend tag on a map card */
+.wb-tag{
+  display:inline-block;font-size:10px;font-weight:700;letter-spacing:.02em;
+  padding:1px 7px;border-radius:99px;vertical-align:1px
+}
+.wb-tag.yes{background:var(--ok-bg);color:var(--ok)}
+.wb-tag.no{background:var(--bad-bg);color:var(--bad)}
+#wbmap .om-person.wb-missed{background:#fcfdfe;border-style:dashed}
+#wbmap .om-person.wb-missed .om-txt b{color:var(--text-2)}

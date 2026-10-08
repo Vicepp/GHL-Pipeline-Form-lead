@@ -1049,8 +1049,9 @@ function setWebinarsView(v) { try { localStorage.setItem('phx_wb_view', v); } ca
 
 const WB_COL = { mxl: '#3366cc', phx: '#b8860b', unknown: '#6b7a90' };
 let wbFocus = null;        /* the attendee whose history is being traced */
-const WB_MAP_COLS = 12;    /* columns before it stops being scannable */
-const WB_MAP_ROWS = 10;    /* people per column */
+/* No caps: every topic gets a column and every attendee a card. The map
+   scrolls sideways and each column scrolls on its own, so a webinar with
+   200 attendees cannot push the page to an unusable height. */
 
 function wbViewToggle() {
   const v = webinarsView();
@@ -1060,19 +1061,25 @@ function wbViewToggle() {
     '</div>';
 }
 
-/** email -> every topic that person has attended */
+/** email -> every webinar that person touched, attended and missed apart */
 function wbAttendeeIndex(topics) {
   const idx = {};
   (topics || []).forEach(t => {
     const st = wbRuns[t.key];
     if (!st || !st.agg) return;
     st.agg.people.forEach(p => {
-      if (!p.attended) return;
-      if (!idx[p.email]) idx[p.email] = { email: p.email, name: p.name, topics: [], minutes: 0, sessions: 0 };
+      if (!idx[p.email]) {
+        idx[p.email] = { email: p.email, name: p.name, topics: [], missed: [], minutes: 0, sessions: 0 };
+      }
       const r = idx[p.email];
-      if (!r.topics.some(x => x.key === t.key)) r.topics.push({ key: t.key, name: t.name, brand: t.brand });
-      r.minutes += p.minutes || 0;
-      r.sessions += p.attendedTimes || 1;
+      const entry = { key: t.key, name: t.name, brand: t.brand };
+      if (p.attended) {
+        if (!r.topics.some(x => x.key === t.key)) r.topics.push(entry);
+        r.minutes += p.minutes || 0;
+        r.sessions += p.attendedTimes || 1;
+      } else if (!r.missed.some(x => x.key === t.key)) {
+        r.missed.push(entry);
+      }
       if ((!r.name || r.name === r.email) && p.name) r.name = p.name;
     });
   });
@@ -1084,7 +1091,7 @@ function viewWebinarsMap() {
   const all = wbTopics || [];
   const runsTotal = all.reduce((a, t) => a + t.count, 0);
 
-  const visible = wbVisibleTopics().slice(0, WB_MAP_COLS);
+  const visible = wbVisibleTopics();
   const loaded = visible.filter(t => wbRuns[t.key] && wbRuns[t.key].agg);
   const idx = wbAttendeeIndex(visible);
   const repeat = Object.keys(idx).filter(k => idx[k].topics.length > 1);
@@ -1093,20 +1100,26 @@ function viewWebinarsMap() {
   const column = (t) => {
     const st = wbRuns[t.key];
     const agg = st && st.agg;
-    const people = agg ? agg.people.filter(p => p.attended)
-      .sort((a, b) => (b.minutes || 0) - (a.minutes || 0)) : [];
-    const shown = people.slice(0, WB_MAP_ROWS);
-
-    const cards = shown.map(p => {
-      const rec = idx[p.email] || { topics: [t] };
+    /* everyone who registered or turned up, attendees first */
+    const people = agg ? agg.people.slice().sort((a, b) =>
+      (b.attended ? 1 : 0) - (a.attended ? 1 : 0) ||
+      (b.minutes || 0) - (a.minutes || 0) ||
+      String(a.name || a.email).localeCompare(String(b.name || b.email))) : [];
+    const cards = people.map(p => {
+      const rec = idx[p.email] || { topics: [], missed: [] };
       const n = rec.topics.length;
       const linked = focus && p.email === focus.email;
-      return '<div class="om-person ' + (linked ? 'linked' : (focus ? 'faded' : '')) + '" ' +
+      return '<div class="om-person ' + (linked ? 'linked' : (focus ? 'faded' : '')) +
+        (p.attended ? '' : ' wb-missed') + '" ' +
         'data-act="wb-focus" data-pk="' + esc(p.email) + '" title="' + esc(p.name || p.email) +
-        (n > 1 ? ' - attended ' + n + ' webinars' : '') + '">' +
+        (p.attended ? ' - attended' : ' - registered but did not attend') +
+        (n > 1 ? ', ' + n + ' webinars attended' : '') + '">' +
         leadAvatar(p.name || p.email) +
         '<div class="om-txt"><b>' + esc(p.name || p.email) + '</b>' +
-          '<span>' + (p.minutes ? p.minutes + ' min watched' : esc(p.email)) + '</span></div>' +
+          '<span>' + (p.attended
+            ? '<span class="wb-tag yes">attended</span>' +
+              (p.minutes ? ' ' + p.minutes + ' min' : '')
+            : '<span class="wb-tag no">did not attend</span>') + '</span></div>' +
         (n > 1 ? '<span class="om-chain" title="Attended ' + n + ' different webinars">&#128279; ' + n + '</span>' : '') +
         '</div>';
     }).join('');
@@ -1116,10 +1129,7 @@ function viewWebinarsMap() {
       : st && st.error
         ? '<div class="om-empty">Could not load</div>'
         : agg
-          ? (cards || '<div class="om-empty">Nobody attended</div>') +
-            (people.length > WB_MAP_ROWS
-              ? '<a class="om-more" href="#/webinars/' + encodeURIComponent(t.key) + '">+ ' +
-                (people.length - WB_MAP_ROWS) + ' more</a>' : '')
+          ? (cards || '<div class="om-empty">Nobody registered</div>')
           : '<button class="om-more" data-act="wb-runs-reload" data-key="' + esc(t.key) + '">Load attendance</button>';
 
     return '<div class="om-col">' +
@@ -1134,19 +1144,25 @@ function viewWebinarsMap() {
   const chainBar = focus
     ? '<div class="om-chainbar">' + leadAvatar(focus.name || focus.email) +
         '<div class="om-cb-txt"><b>' + esc(focus.name || focus.email) + '</b>' +
-          '<span>' + esc(focus.email) + ' &middot; ' + focus.minutes + ' min watched</span></div>' +
+          '<span>' + esc(focus.email) + (focus.minutes ? ' &middot; ' + focus.minutes + ' min watched' : '') +
+          '</span></div>' +
         '<div class="om-cb-forms">' +
-          (focus.topics.length > 1
-            ? 'Attended ' + focus.topics.length + ' webinars: '
-            : 'Attended 1 webinar: ') +
-          focus.topics.map(x => '<a href="#/webinars/' + encodeURIComponent(x.key) + '">' +
-            '<span class="pill gold">' + esc(x.name) + '</span></a>').join(' ') +
+          (focus.topics.length
+            ? 'Attended ' + focus.topics.length + ' webinar' + (focus.topics.length === 1 ? '' : 's') + ': ' +
+              focus.topics.map(x => '<a href="#/webinars/' + encodeURIComponent(x.key) + '">' +
+                '<span class="pill gold">' + esc(x.name) + '</span></a>').join(' ')
+            : 'Has not attended any yet.') +
+          (focus.missed.length
+            ? '<span style="opacity:.75;margin-left:4px">Registered but missed ' + focus.missed.length + ': ' +
+              focus.missed.map(x => '<a href="#/webinars/' + encodeURIComponent(x.key) + '">' +
+                '<span class="pill">' + esc(x.name) + '</span></a>').join(' ') + '</span>'
+            : '') +
         '</div>' +
         '<button class="btn btn-sm" data-act="wb-focus-clear">Clear</button>' +
       '</div>'
     : '<div class="om-hint">' +
       (loaded.length
-        ? 'Click anyone to trace every webinar they have attended.' +
+        ? 'Click anyone to trace every webinar they attended or missed.' +
           (repeat.length ? ' <b>' + repeat.length + '</b> ' +
             (repeat.length === 1 ? 'person has' : 'people have') + ' been to more than one.' : '')
         : 'Load attendance to see who came to each webinar.') +
@@ -1169,10 +1185,7 @@ function viewWebinarsMap() {
           '</div>' +
           '<svg class="om-links" aria-hidden="true"></svg>' +
         '</div>' +
-        (wbVisibleTopics().length > WB_MAP_COLS
-          ? '<div class="tiny muted" style="margin-top:10px;text-align:center">Showing the ' + WB_MAP_COLS +
-            ' most recent topics. <button class="btn btn-sm" data-act="wb-view" data-v="list">See all ' +
-            wbVisibleTopics().length + ' in the list</button></div>' : '');
+        '';
 
   shell('webinars',
     title('Webinars', wbTopics
@@ -1192,7 +1205,14 @@ function viewWebinarsMap() {
         : ''),
     body);
 
-  if (focus) drawChainLinks('wbmap');
+  if (focus) {
+    /* a linked card may be scrolled out of its column, which would leave the
+       chain pointing at nothing - bring each into view, then draw */
+    document.querySelectorAll('#wbmap .om-person.linked').forEach(el => {
+      try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (e) {}
+    });
+    drawChainLinks('wbmap');
+  }
 }
 
 function wbErrorCard() {
