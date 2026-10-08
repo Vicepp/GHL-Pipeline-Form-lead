@@ -897,7 +897,7 @@ function viewForms() {
 
 const WB_BRANDS = {
   mxl: { label: 'MXL', full: 'My Expansive Life', cls: 'wb-mxl' },
-  phx: { label: 'Pheenyx', full: 'Pheenyx Capital', cls: 'wb-phx' },
+  phx: { label: 'PHC', full: 'Pheenyx Capital', cls: 'wb-phx' },
   unknown: { label: 'Unsorted', full: 'Not classified yet', cls: 'wb-unk' }
 };
 
@@ -975,17 +975,57 @@ async function wbLoadRuns(topic, force) {
   render();
 }
 
+let wbStatsRun = false;      /* a bulk load is in progress */
+let wbStatsStop = false;
+let wbStatsDone = 0, wbStatsOf = 0;
+
+/** Pull attendance for every visible topic, one at a time.
+    ClickMeeting needs three calls per session, so loading all 44 topics at
+    once would be hundreds of requests - this walks them in order, repaints
+    after each, and can be stopped. Anything already cached is skipped. */
+async function wbLoadAllStats() {
+  const todo = wbVisibleTopics().filter(t => !(wbRuns[t.key] && wbRuns[t.key].agg));
+  wbStatsRun = true; wbStatsStop = false; wbStatsDone = 0; wbStatsOf = todo.length;
+  render();
+  for (const t of todo) {
+    if (wbStatsStop) break;
+    try { await wbLoadRuns(t); } catch (e) { /* one bad topic must not halt the rest */ }
+    wbStatsDone++;
+    render();
+  }
+  wbStatsRun = false;
+  render();
+}
+
+/** what the list shows per topic, once loaded */
+function wbStats(topic) {
+  const st = wbRuns[topic.key];
+  if (!st) return null;
+  if (st.loading) return { loading: true };
+  if (st.error) return { error: st.error };
+  if (!st.agg) return null;
+  const a = st.agg;
+  return {
+    registered: a.registered,
+    attended: a.registered - a.noShow,
+    noShow: a.noShow,
+    rate: a.rate,
+    partial: !!st.truncated
+  };
+}
+
 const wbPill = (brand, key) =>
   '<button class="wb-pill ' + (WB_BRANDS[brand] || WB_BRANDS.unknown).cls + '" ' +
-  'data-act="wb-brand" data-key="' + esc(key) + '" title="Click to change which brand this belongs to">' +
-  esc((WB_BRANDS[brand] || WB_BRANDS.unknown).label) + '</button>';
+  'data-act="wb-brand" data-key="' + esc(key) + '" title="Change the brand">' +
+  esc((WB_BRANDS[brand] || WB_BRANDS.unknown).label) + ' <span class="wb-caret">&#9662;</span></button>';
 
 function wbFilters() {
   const b = (v, label) => '<button class="seg-btn ' + (wbBrand === v ? 'on' : '') +
     '" data-act="wb-brand-filter" data-v="' + v + '">' + label + '</button>';
+  /* the filter labels must match the pills, or MXL/PHC read as two systems */
   const w = (v, label) => '<button class="seg-btn ' + (wbWhen === v ? 'on' : '') +
     '" data-act="wb-when" data-v="' + v + '">' + label + '</button>';
-  return '<div class="seg">' + b('all', 'All') + b('mxl', 'MXL') + b('phx', 'Pheenyx') + b('unknown', 'Unsorted') + '</div>' +
+  return '<div class="seg">' + b('all', 'All') + b('mxl', 'MXL') + b('phx', 'PHC') + b('unknown', 'Unsorted') + '</div>' +
     '<div class="seg">' + w('all', 'All') + w('upcoming', 'Upcoming') + w('past', 'Past') + '</div>';
 }
 
@@ -998,13 +1038,19 @@ function wbVisibleTopics() {
   });
 }
 
-/* ------------------- WEBINARS: map view ------------------- */
+/* ------------------- WEBINARS: map view -------------------
+   One column per webinar topic, the people who attended beneath it.
+   Clicking anyone traces every webinar they have attended, exactly as
+   the Forms map traces every form somebody filled in.                  */
 function webinarsView() {
   try { return localStorage.getItem('phx_wb_view') || 'map'; } catch (e) { return 'map'; }
 }
 function setWebinarsView(v) { try { localStorage.setItem('phx_wb_view', v); } catch (e) {} }
 
 const WB_COL = { mxl: '#3366cc', phx: '#b8860b', unknown: '#6b7a90' };
+let wbFocus = null;        /* the attendee whose history is being traced */
+const WB_MAP_COLS = 12;    /* columns before it stops being scannable */
+const WB_MAP_ROWS = 10;    /* people per column */
 
 function wbViewToggle() {
   const v = webinarsView();
@@ -1014,69 +1060,139 @@ function wbViewToggle() {
     '</div>';
 }
 
+/** email -> every topic that person has attended */
+function wbAttendeeIndex(topics) {
+  const idx = {};
+  (topics || []).forEach(t => {
+    const st = wbRuns[t.key];
+    if (!st || !st.agg) return;
+    st.agg.people.forEach(p => {
+      if (!p.attended) return;
+      if (!idx[p.email]) idx[p.email] = { email: p.email, name: p.name, topics: [], minutes: 0, sessions: 0 };
+      const r = idx[p.email];
+      if (!r.topics.some(x => x.key === t.key)) r.topics.push({ key: t.key, name: t.name, brand: t.brand });
+      r.minutes += p.minutes || 0;
+      r.sessions += p.attendedTimes || 1;
+      if ((!r.name || r.name === r.email) && p.name) r.name = p.name;
+    });
+  });
+  return idx;
+}
+
 function viewWebinarsMap() {
   if (!wbTopics && !wbLoading && !wbError) { wbLoadTopics(); }
   const all = wbTopics || [];
   const runsTotal = all.reduce((a, t) => a + t.count, 0);
-  const CAP = 14;
 
-  const column = (brand) => {
-    const topics = all.filter(t => t.brand === brand && (
-      wbWhen === 'all' ? true : wbWhen === 'upcoming' ? t.upcoming > 0 : t.upcoming < t.count));
-    const sessions = topics.reduce((a, t) => a + t.count, 0);
-    const shown = topics.slice(0, CAP);
-    const cards = shown.map(t =>
-      '<a class="om-person wb-card" href="#/webinars/' + encodeURIComponent(t.key) + '" ' +
-        'title="' + esc(t.name) + '">' +
-        '<div class="om-txt"><b>' + esc(t.name) + '</b>' +
-          '<span>' + t.count + ' session' + (t.count === 1 ? '' : 's') +
-          (t.last ? ' &middot; last ' + fmtDate(t.last) : '') + '</span></div>' +
-        (t.upcoming ? '<span class="om-chain" title="' + t.upcoming + ' scheduled ahead">&#9679; ' +
-          t.upcoming + '</span>'
-          : (!t.confident && !t.overridden
-              ? '<span class="om-chain" style="background:var(--warn-bg);color:var(--warn)" ' +
-                'title="The title mentions both sides">?</span>' : '')) +
-      '</a>').join('');
+  const visible = wbVisibleTopics().slice(0, WB_MAP_COLS);
+  const loaded = visible.filter(t => wbRuns[t.key] && wbRuns[t.key].agg);
+  const idx = wbAttendeeIndex(visible);
+  const repeat = Object.keys(idx).filter(k => idx[k].topics.length > 1);
+  const focus = wbFocus && idx[wbFocus] ? idx[wbFocus] : null;
+
+  const column = (t) => {
+    const st = wbRuns[t.key];
+    const agg = st && st.agg;
+    const people = agg ? agg.people.filter(p => p.attended)
+      .sort((a, b) => (b.minutes || 0) - (a.minutes || 0)) : [];
+    const shown = people.slice(0, WB_MAP_ROWS);
+
+    const cards = shown.map(p => {
+      const rec = idx[p.email] || { topics: [t] };
+      const n = rec.topics.length;
+      const linked = focus && p.email === focus.email;
+      return '<div class="om-person ' + (linked ? 'linked' : (focus ? 'faded' : '')) + '" ' +
+        'data-act="wb-focus" data-pk="' + esc(p.email) + '" title="' + esc(p.name || p.email) +
+        (n > 1 ? ' - attended ' + n + ' webinars' : '') + '">' +
+        leadAvatar(p.name || p.email) +
+        '<div class="om-txt"><b>' + esc(p.name || p.email) + '</b>' +
+          '<span>' + (p.minutes ? p.minutes + ' min watched' : esc(p.email)) + '</span></div>' +
+        (n > 1 ? '<span class="om-chain" title="Attended ' + n + ' different webinars">&#128279; ' + n + '</span>' : '') +
+        '</div>';
+    }).join('');
+
+    const inner = st && st.loading
+      ? '<div class="om-empty">Loading&hellip;</div>'
+      : st && st.error
+        ? '<div class="om-empty">Could not load</div>'
+        : agg
+          ? (cards || '<div class="om-empty">Nobody attended</div>') +
+            (people.length > WB_MAP_ROWS
+              ? '<a class="om-more" href="#/webinars/' + encodeURIComponent(t.key) + '">+ ' +
+                (people.length - WB_MAP_ROWS) + ' more</a>' : '')
+          : '<button class="om-more" data-act="wb-runs-reload" data-key="' + esc(t.key) + '">Load attendance</button>';
 
     return '<div class="om-col">' +
-      '<div class="om-head" style="background:' + WB_COL[brand] + '">' +
-        '<span>' + esc(WB_BRANDS[brand].full) + '</span>' +
-        '<span class="om-count">' + topics.length + '</span></div>' +
-      '<div class="om-people">' +
-        (cards || '<div class="om-empty">Nothing here</div>') +
-        (topics.length > CAP
-          ? '<button class="om-more" data-act="wb-see-all" data-v="' + brand + '">+ ' +
-            (topics.length - CAP) + ' more</button>' : '') +
-        (topics.length ? '<div class="wb-colsum">' + sessions + ' sessions run</div>' : '') +
+      '<div class="om-head" style="background:' + WB_COL[t.brand] + '">' +
+        '<a href="#/webinars/' + encodeURIComponent(t.key) + '" title="' + esc(t.name) + '">' + esc(t.name) + '</a>' +
+        '<span class="om-count">' + (agg ? (agg.registered - agg.noShow) : t.count) + '</span></div>' +
+      '<div class="om-people">' + inner +
+        (agg ? '<div class="wb-colsum">' + agg.registered + ' registered &middot; ' + agg.rate + '% came</div>' : '') +
       '</div></div>';
   };
+
+  const chainBar = focus
+    ? '<div class="om-chainbar">' + leadAvatar(focus.name || focus.email) +
+        '<div class="om-cb-txt"><b>' + esc(focus.name || focus.email) + '</b>' +
+          '<span>' + esc(focus.email) + ' &middot; ' + focus.minutes + ' min watched</span></div>' +
+        '<div class="om-cb-forms">' +
+          (focus.topics.length > 1
+            ? 'Attended ' + focus.topics.length + ' webinars: '
+            : 'Attended 1 webinar: ') +
+          focus.topics.map(x => '<a href="#/webinars/' + encodeURIComponent(x.key) + '">' +
+            '<span class="pill gold">' + esc(x.name) + '</span></a>').join(' ') +
+        '</div>' +
+        '<button class="btn btn-sm" data-act="wb-focus-clear">Clear</button>' +
+      '</div>'
+    : '<div class="om-hint">' +
+      (loaded.length
+        ? 'Click anyone to trace every webinar they have attended.' +
+          (repeat.length ? ' <b>' + repeat.length + '</b> ' +
+            (repeat.length === 1 ? 'person has' : 'people have') + ' been to more than one.' : '')
+        : 'Load attendance to see who came to each webinar.') +
+      '</div>';
 
   const body = wbLoading
     ? '<div class="card"><div class="empty">Loading webinars from ClickMeeting&hellip;</div></div>'
     : wbError
       ? wbErrorCard()
-      : '<div class="orgmap" id="wbmap">' +
+      : chainBar +
+        '<div class="orgmap' + (focus ? ' focusing' : '') + '" id="wbmap">' +
           '<div class="om-rootrow"><div class="om-root">' +
             '<div class="mark">P</div><div><b>' + esc(S.db().org.name) + '</b>' +
             '<span>' + all.length + ' topics &middot; ' + runsTotal + ' sessions run</span></div>' +
           '</div></div>' +
           '<div class="om-rail"></div>' +
-          '<div class="om-cols">' + column('mxl') + column('phx') +
-            (all.some(t => t.brand === 'unknown') ? column('unknown') : '') + '</div>' +
-        '</div>';
+          '<div class="om-cols">' +
+            (visible.length ? visible.map(column).join('')
+              : '<div class="empty">No topics match this filter.</div>') +
+          '</div>' +
+          '<svg class="om-links" aria-hidden="true"></svg>' +
+        '</div>' +
+        (wbVisibleTopics().length > WB_MAP_COLS
+          ? '<div class="tiny muted" style="margin-top:10px;text-align:center">Showing the ' + WB_MAP_COLS +
+            ' most recent topics. <button class="btn btn-sm" data-act="wb-view" data-v="list">See all ' +
+            wbVisibleTopics().length + ' in the list</button></div>' : '');
 
   shell('webinars',
     title('Webinars', wbTopics
-      ? all.length + ' topics across ' + runsTotal + ' sessions &middot; MXL is LinkedIn and career, Pheenyx is investing'
+      ? all.length + ' topics across ' + runsTotal + ' sessions &middot; MXL is LinkedIn and career, PHC is investing'
       : 'From ClickMeeting') +
     wbViewToggle() +
     '<div class="seg">' +
-      ['all', 'upcoming', 'past'].map(v => '<button class="seg-btn ' + (wbWhen === v ? 'on' : '') +
-        '" data-act="wb-when" data-v="' + v + '">' +
-        (v === 'all' ? 'All' : v === 'upcoming' ? 'Upcoming' : 'Past') + '</button>').join('') +
+      ['all', 'mxl', 'phx', 'unknown'].map(v => '<button class="seg-btn ' + (wbBrand === v ? 'on' : '') +
+        '" data-act="wb-brand-filter" data-v="' + v + '">' +
+        (v === 'all' ? 'All' : v === 'mxl' ? 'MXL' : v === 'phx' ? 'PHC' : 'Unsorted') + '</button>').join('') +
     '</div>' +
-    (wbTopics ? '<button class="btn btn-sm" data-act="wb-reload">Refresh</button>' : ''),
+    (wbTopics && !wbStatsRun
+      ? '<button class="btn btn-sm btn-gold" data-act="wb-stats">Load attendance</button>'
+      : wbStatsRun
+        ? '<span class="tiny muted">' + wbStatsDone + ' of ' + wbStatsOf + '&hellip;</span>' +
+          '<button class="btn btn-sm" data-act="wb-stats-stop">Stop</button>'
+        : ''),
     body);
+
+  if (focus) drawChainLinks('wbmap');
 }
 
 function wbErrorCard() {
@@ -1107,24 +1223,43 @@ function viewWebinars() {
           kpi('Topics', all.length, runsTotal + ' sessions run in total', true) +
           kpi('Upcoming', upcoming, upcoming ? 'scheduled ahead' : 'nothing scheduled') +
           kpi('MXL sessions', byBrand.mxl || 0, 'My Expansive Life') +
-          kpi('Pheenyx sessions', byBrand.phx || 0, 'Pheenyx Capital') +
+          kpi('PHC sessions', byBrand.phx || 0, 'Pheenyx Capital') +
         '</div>' +
-        '<div class="card"><div class="card-h"><h3>Webinar topics</h3><div class="spacer"></div>' + wbFilters() + '</div>' +
+        '<div class="card"><div class="card-h"><h3>Webinar topics</h3><div class="spacer"></div>' +
+        (wbStatsRun
+          ? '<span class="tiny muted">Reading attendance ' + wbStatsDone + ' of ' + wbStatsOf + '&hellip;</span>' +
+            '<button class="btn btn-sm" data-act="wb-stats-stop">Stop</button>'
+          : '<button class="btn btn-sm btn-gold" data-act="wb-stats">Load attendance</button>') +
+        wbFilters() + '</div>' +
         '<div class="scroll-x"><table class="tbl"><thead><tr>' +
-        '<th>Topic</th><th>Brand</th><th>Sessions</th><th>First</th><th>Latest</th><th></th>' +
+        '<th>Topic</th><th>Brand</th><th>Webinar date</th><th>Sessions</th>' +
+        '<th>Registered</th><th>Attended</th><th>Not attended</th><th></th>' +
         '</tr></thead><tbody>' +
-        (list.length ? list.map(t =>
-          '<tr><td><div class="n"><a href="#/webinars/' + encodeURIComponent(t.key) + '">' + esc(t.name) + '</a></div>' +
+        (list.length ? list.map(t => {
+          const st = wbStats(t);
+          const cell = (v) => st
+            ? (st.loading ? '<span class="wb-wait">&hellip;</span>'
+              : st.error ? '<span class="tiny muted" title="' + esc(st.error) + '">n/a</span>'
+              : v)
+            : '<span class="tiny muted">&mdash;</span>';
+          return '<tr><td><div class="n"><a href="#/webinars/' + encodeURIComponent(t.key) + '">' + esc(t.name) + '</a></div>' +
             (t.upcoming ? '<span class="pill ok"><span class="dot"></span>' + t.upcoming + ' upcoming</span> ' : '') +
             (!t.confident && !t.overridden
-              ? '<span class="pill warn" title="The title mentions both sides - check the brand">unsure</span>' : '') +
-            (t.overridden ? '<span class="pill">set by you</span>' : '') + '</td>' +
+              ? '<span class="pill warn" title="The title mentions both sides - set the brand">unsure</span>' : '') +
+            (t.overridden ? '<span class="pill">set by you</span>' : '') +
+            (st && st.partial ? '<span class="pill" title="Counts cover the 20 most recent sessions">partial</span>' : '') +
+            '</td>' +
           '<td>' + wbPill(t.brand, t.key) + '</td>' +
+          '<td class="tiny muted" title="' + esc(t.last ? fullStamp(t.last) : '') + '">' +
+            (t.last ? fmtDate(t.last) : '-') + '</td>' +
           '<td><b>' + t.count + '</b></td>' +
-          '<td class="tiny muted">' + (t.first ? fmtDate(t.first) : '-') + '</td>' +
-          '<td class="tiny muted">' + (t.last ? fmtDate(t.last) : '-') + '</td>' +
-          '<td><a class="btn btn-sm" href="#/webinars/' + encodeURIComponent(t.key) + '">Open</a></td></tr>').join('')
-          : '<tr><td colspan="6"><div class="empty">No topics match this filter.</div></td></tr>') +
+          '<td>' + cell('<b>' + (st && st.registered) + '</b>') + '</td>' +
+          '<td>' + cell(st && st.registered
+            ? '<span class="pill ok">' + st.attended + ' &middot; ' + st.rate + '%</span>' : '0') + '</td>' +
+          '<td>' + cell(st && st.noShow ? '<span class="pill bad">' + st.noShow + '</span>' : '0') + '</td>' +
+          '<td><a class="btn btn-sm" href="#/webinars/' + encodeURIComponent(t.key) + '">Open</a></td></tr>';
+        }).join('')
+          : '<tr><td colspan="8"><div class="empty">No topics match this filter.</div></td></tr>') +
         '</tbody></table></div></div>';
 
   shell('webinars',
@@ -1365,8 +1500,8 @@ function viewFormsMap() {
 
 /** Join every card belonging to the focused person with a curved path,
     measured after layout so it survives scrolling and wrapping. */
-function drawChainLinks() {
-  const wrap = document.getElementById('orgmap');
+function drawChainLinks(id) {
+  const wrap = document.getElementById(id || 'orgmap');
   if (!wrap) return;
   const svg = wrap.querySelector('.om-links');
   if (!svg) return;
@@ -2243,6 +2378,15 @@ document.addEventListener('click', e => {
 
     /* webinars */
     case 'wb-reload': wbTopics = null; wbRuns = {}; wbLoadTopics(true); return;
+    case 'wb-focus': {
+      const pk = t.dataset.pk;
+      wbFocus = (wbFocus === pk) ? null : pk;   /* clicking again releases it */
+      render();
+      return;
+    }
+    case 'wb-focus-clear': wbFocus = null; render(); return;
+    case 'wb-stats': wbLoadAllStats(); return;
+    case 'wb-stats-stop': wbStatsStop = true; return;
     case 'wb-view': setWebinarsView(t.dataset.v); render(); return;
     case 'wb-see-all': setWebinarsView('list'); wbBrand = t.dataset.v; render(); return;
     case 'wb-brand-filter': wbBrand = t.dataset.v; render(); return;
@@ -2493,10 +2637,14 @@ function render() {
 window.addEventListener('hashchange', () => {
   closeModal();
   if (location.hash.indexOf('#/forms') !== 0) omFocus = null;
+  if (location.hash.indexOf('#/webinars') !== 0) wbFocus = null;
   render();
 });
 /* the chain lines are measured from the laid-out page, so redraw on resize */
-window.addEventListener('resize', () => { if (document.getElementById('orgmap')) drawChainLinks(); });
+window.addEventListener('resize', () => {
+  if (document.getElementById('orgmap')) drawChainLinks('orgmap');
+  if (document.getElementById('wbmap')) drawChainLinks('wbmap');
+});
 
 /* ---------------------------------------------------------------- start */
 let started = false;
