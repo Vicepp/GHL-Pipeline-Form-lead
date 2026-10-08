@@ -108,6 +108,24 @@ async function loadRun(id) {
 
 module.exports = async function handler(req, res) {
   const q = req.query || {};
+
+  /* Is the server configured? Returns booleans only - never a value, never
+     anything from ClickMeeting - so it is safe without a sign-in, and means
+     a missing variable can be diagnosed without guessing. */
+  if (q.action === 'health') {
+    return send(res, 200, {
+      ok: true,
+      configured: {
+        CLICKMEETING_API_KEY: !!process.env.CLICKMEETING_API_KEY,
+        FIREBASE_API_KEY: !!process.env.FIREBASE_API_KEY,
+        FIREBASE_PROJECT_ID: !!process.env.FIREBASE_PROJECT_ID
+      },
+      ready: !!(process.env.CLICKMEETING_API_KEY && process.env.FIREBASE_API_KEY &&
+        process.env.FIREBASE_PROJECT_ID),
+      note: 'true means the variable is set on this deployment, not that its value is correct.'
+    });
+  }
+
   try {
     const email = await callerEmail(req);
     await assertTeam(email);
