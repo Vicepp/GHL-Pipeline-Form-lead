@@ -998,6 +998,97 @@ function wbVisibleTopics() {
   });
 }
 
+/* ------------------- WEBINARS: map view ------------------- */
+function webinarsView() {
+  try { return localStorage.getItem('phx_wb_view') || 'map'; } catch (e) { return 'map'; }
+}
+function setWebinarsView(v) { try { localStorage.setItem('phx_wb_view', v); } catch (e) {} }
+
+const WB_COL = { mxl: '#3366cc', phx: '#b8860b', unknown: '#6b7a90' };
+
+function wbViewToggle() {
+  const v = webinarsView();
+  return '<div class="seg">' +
+    '<button class="seg-btn ' + (v === 'map' ? 'on' : '') + '" data-act="wb-view" data-v="map">Map</button>' +
+    '<button class="seg-btn ' + (v === 'list' ? 'on' : '') + '" data-act="wb-view" data-v="list">List</button>' +
+    '</div>';
+}
+
+function viewWebinarsMap() {
+  if (!wbTopics && !wbLoading && !wbError) { wbLoadTopics(); }
+  const all = wbTopics || [];
+  const runsTotal = all.reduce((a, t) => a + t.count, 0);
+  const CAP = 14;
+
+  const column = (brand) => {
+    const topics = all.filter(t => t.brand === brand && (
+      wbWhen === 'all' ? true : wbWhen === 'upcoming' ? t.upcoming > 0 : t.upcoming < t.count));
+    const sessions = topics.reduce((a, t) => a + t.count, 0);
+    const shown = topics.slice(0, CAP);
+    const cards = shown.map(t =>
+      '<a class="om-person wb-card" href="#/webinars/' + encodeURIComponent(t.key) + '" ' +
+        'title="' + esc(t.name) + '">' +
+        '<div class="om-txt"><b>' + esc(t.name) + '</b>' +
+          '<span>' + t.count + ' session' + (t.count === 1 ? '' : 's') +
+          (t.last ? ' &middot; last ' + fmtDate(t.last) : '') + '</span></div>' +
+        (t.upcoming ? '<span class="om-chain" title="' + t.upcoming + ' scheduled ahead">&#9679; ' +
+          t.upcoming + '</span>'
+          : (!t.confident && !t.overridden
+              ? '<span class="om-chain" style="background:var(--warn-bg);color:var(--warn)" ' +
+                'title="The title mentions both sides">?</span>' : '')) +
+      '</a>').join('');
+
+    return '<div class="om-col">' +
+      '<div class="om-head" style="background:' + WB_COL[brand] + '">' +
+        '<span>' + esc(WB_BRANDS[brand].full) + '</span>' +
+        '<span class="om-count">' + topics.length + '</span></div>' +
+      '<div class="om-people">' +
+        (cards || '<div class="om-empty">Nothing here</div>') +
+        (topics.length > CAP
+          ? '<button class="om-more" data-act="wb-see-all" data-v="' + brand + '">+ ' +
+            (topics.length - CAP) + ' more</button>' : '') +
+        (topics.length ? '<div class="wb-colsum">' + sessions + ' sessions run</div>' : '') +
+      '</div></div>';
+  };
+
+  const body = wbLoading
+    ? '<div class="card"><div class="empty">Loading webinars from ClickMeeting&hellip;</div></div>'
+    : wbError
+      ? wbErrorCard()
+      : '<div class="orgmap" id="wbmap">' +
+          '<div class="om-rootrow"><div class="om-root">' +
+            '<div class="mark">P</div><div><b>' + esc(S.db().org.name) + '</b>' +
+            '<span>' + all.length + ' topics &middot; ' + runsTotal + ' sessions run</span></div>' +
+          '</div></div>' +
+          '<div class="om-rail"></div>' +
+          '<div class="om-cols">' + column('mxl') + column('phx') +
+            (all.some(t => t.brand === 'unknown') ? column('unknown') : '') + '</div>' +
+        '</div>';
+
+  shell('webinars',
+    title('Webinars', wbTopics
+      ? all.length + ' topics across ' + runsTotal + ' sessions &middot; MXL is LinkedIn and career, Pheenyx is investing'
+      : 'From ClickMeeting') +
+    wbViewToggle() +
+    '<div class="seg">' +
+      ['all', 'upcoming', 'past'].map(v => '<button class="seg-btn ' + (wbWhen === v ? 'on' : '') +
+        '" data-act="wb-when" data-v="' + v + '">' +
+        (v === 'all' ? 'All' : v === 'upcoming' ? 'Upcoming' : 'Past') + '</button>').join('') +
+    '</div>' +
+    (wbTopics ? '<button class="btn btn-sm" data-act="wb-reload">Refresh</button>' : ''),
+    body);
+}
+
+function wbErrorCard() {
+  return '<div class="card"><div class="card-b">' +
+    '<div class="tiny" style="color:var(--bad);font-weight:600;margin-bottom:8px">' + esc(wbError) + '</div>' +
+    '<div class="tiny muted">The webinar list comes from <code>/api/clickmeeting</code>, which needs ' +
+    '<code>CLICKMEETING_API_KEY</code> set in Vercel and a signed-in team member. ' +
+    'It cannot run on local demo data.</div>' +
+    '<button class="btn btn-sm btn-gold" style="margin-top:12px" data-act="wb-reload">Try again</button>' +
+    '</div></div>';
+}
+
 function viewWebinars() {
   if (!wbTopics && !wbLoading && !wbError) { wbLoadTopics(); }
 
@@ -1011,13 +1102,7 @@ function viewWebinars() {
   const body = wbLoading
     ? '<div class="card"><div class="empty">Loading webinars from ClickMeeting&hellip;</div></div>'
     : wbError
-      ? '<div class="card"><div class="card-b">' +
-        '<div class="tiny" style="color:var(--bad);font-weight:600;margin-bottom:8px">' + esc(wbError) + '</div>' +
-        '<div class="tiny muted">The webinar list comes from <code>/api/clickmeeting</code>, which needs ' +
-        '<code>CLICKMEETING_API_KEY</code> set in Vercel and a signed-in team member. ' +
-        'It cannot run on local demo data.</div>' +
-        '<button class="btn btn-sm btn-gold" style="margin-top:12px" data-act="wb-reload">Try again</button>' +
-        '</div></div>'
+      ? wbErrorCard()
       : '<div class="kpis">' +
           kpi('Topics', all.length, runsTotal + ' sessions run in total', true) +
           kpi('Upcoming', upcoming, upcoming ? 'scheduled ahead' : 'nothing scheduled') +
@@ -1046,6 +1131,7 @@ function viewWebinars() {
     title('Webinars', wbTopics
       ? all.length + ' topics across ' + runsTotal + ' sessions &middot; MXL is LinkedIn and career, Pheenyx is investing'
       : 'From ClickMeeting') +
+    wbViewToggle() +
     (wbTopics ? '<button class="btn btn-sm" data-act="wb-reload">Refresh</button>' : ''),
     body);
 }
@@ -2157,6 +2243,8 @@ document.addEventListener('click', e => {
 
     /* webinars */
     case 'wb-reload': wbTopics = null; wbRuns = {}; wbLoadTopics(true); return;
+    case 'wb-view': setWebinarsView(t.dataset.v); render(); return;
+    case 'wb-see-all': setWebinarsView('list'); wbBrand = t.dataset.v; render(); return;
     case 'wb-brand-filter': wbBrand = t.dataset.v; render(); return;
     case 'wb-when': wbWhen = t.dataset.v; render(); return;
     case 'wb-brand': dlgWebinarBrand(t.dataset.key); return;
@@ -2385,7 +2473,8 @@ function render() {
     case 'analytics': viewAnalytics(); break;
     case 'webinars':
       if (parts[1]) viewWebinarTopic(decodeURIComponent(parts[1]));
-      else viewWebinars();
+      else if (webinarsView() === 'list') viewWebinars();
+      else viewWebinarsMap();
       break;
     case 'pipelines': viewPipelines(); break;
     case 'pipeline': viewBoard(parts[1]); break;
