@@ -1061,7 +1061,7 @@ function wbViewToggle() {
     '</div>';
 }
 
-/** email -> every webinar that person touched, attended and missed apart */
+/** email -> every webinar that person signed up for, each with its outcome */
 function wbAttendeeIndex(topics) {
   const idx = {};
   (topics || []).forEach(t => {
@@ -1069,19 +1069,32 @@ function wbAttendeeIndex(topics) {
     if (!st || !st.agg) return;
     st.agg.people.forEach(p => {
       if (!idx[p.email]) {
-        idx[p.email] = { email: p.email, name: p.name, topics: [], missed: [], minutes: 0, sessions: 0 };
+        idx[p.email] = { email: p.email, name: p.name, webinars: [], minutes: 0, sessions: 0 };
       }
       const r = idx[p.email];
-      const entry = { key: t.key, name: t.name, brand: t.brand };
+      let w = r.webinars.find(x => x.key === t.key);
+      if (!w) {
+        w = { key: t.key, name: t.name, brand: t.brand, last: t.last,
+              attended: false, minutes: 0, registered: !!p.registeredAt, walkIn: !!p.walkIn };
+        r.webinars.push(w);
+      }
+      if (p.registeredAt) w.registered = true;
       if (p.attended) {
-        if (!r.topics.some(x => x.key === t.key)) r.topics.push(entry);
+        w.attended = true;
+        w.minutes += p.minutes || 0;
         r.minutes += p.minutes || 0;
         r.sessions += p.attendedTimes || 1;
-      } else if (!r.missed.some(x => x.key === t.key)) {
-        r.missed.push(entry);
       }
       if ((!r.name || r.name === r.email) && p.name) r.name = p.name;
     });
+  });
+  /* most recent webinar first, so the banner reads as a history */
+  Object.keys(idx).forEach(k => {
+    idx[k].webinars.sort((a, b) => new Date(b.last || 0) - new Date(a.last || 0));
+    idx[k].attendedCount = idx[k].webinars.filter(w => w.attended).length;
+    idx[k].missedCount = idx[k].webinars.filter(w => !w.attended).length;
+    /* the chain still traces attendance, so keep that list available */
+    idx[k].topics = idx[k].webinars.filter(w => w.attended);
   });
   return idx;
 }
@@ -1147,16 +1160,16 @@ function viewWebinarsMap() {
           '<span>' + esc(focus.email) + (focus.minutes ? ' &middot; ' + focus.minutes + ' min watched' : '') +
           '</span></div>' +
         '<div class="om-cb-forms">' +
-          (focus.topics.length
-            ? 'Attended ' + focus.topics.length + ' webinar' + (focus.topics.length === 1 ? '' : 's') + ': ' +
-              focus.topics.map(x => '<a href="#/webinars/' + encodeURIComponent(x.key) + '">' +
-                '<span class="pill gold">' + esc(x.name) + '</span></a>').join(' ')
-            : 'Has not attended any yet.') +
-          (focus.missed.length
-            ? '<span style="opacity:.75;margin-left:4px">Registered but missed ' + focus.missed.length + ': ' +
-              focus.missed.map(x => '<a href="#/webinars/' + encodeURIComponent(x.key) + '">' +
-                '<span class="pill">' + esc(x.name) + '</span></a>').join(' ') + '</span>'
-            : '') +
+          '<span class="om-cb-lead">Signed up for ' + focus.webinars.length + ' webinar' +
+            (focus.webinars.length === 1 ? '' : 's') + ' &middot; attended ' + focus.attendedCount +
+            ', missed ' + focus.missedCount + '</span>' +
+          focus.webinars.map(w => '<a href="#/webinars/' + encodeURIComponent(w.key) + '" ' +
+            'title="' + esc(w.name) + (w.last ? ' - ' + fmtDate(w.last) : '') + '">' +
+            '<span class="wb-hist ' + (w.attended ? 'yes' : 'no') + '">' +
+              esc(w.name) +
+              '<i>' + (w.attended ? 'attended' + (w.minutes ? ' &middot; ' + w.minutes + 'm' : '')
+                                  : (w.walkIn ? 'walk-in' : 'did not attend')) + '</i>' +
+            '</span></a>').join('') +
         '</div>' +
         '<button class="btn btn-sm" data-act="wb-focus-clear">Clear</button>' +
       '</div>'
