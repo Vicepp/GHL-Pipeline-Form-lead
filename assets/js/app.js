@@ -1074,27 +1074,69 @@ function wbRows() {
         city: (p.city || '').trim() || 'Unknown',
         country: (p.country || '').trim(),
         source: (p.source || 'Unknown').trim(),
-        at: p.registeredAt || t.last
+        registeredAt: p.registeredAt || null,
+        at: p.registeredAt || t.last,
+        webinarAt: t.last
       });
     });
   });
   return rows;
 }
 
-/** first time we ever saw each email, so newcomers can be told apart */
+/**
+ * Registering and attending are different firsts, and conflating them was
+ * wrong: somebody who signed up three times and never came is NOT a new
+ * registrant the fourth time - but the first time they actually turn up is
+ * worth knowing, because that is the moment they became real.
+ *
+ * Returns the earliest registration and the earliest attendance per person,
+ * computed over every row loaded.
+ */
 function wbFirstSeen(rows) {
-  const first = {};
+  const reg = {}, att = {};
   rows.forEach(r => {
-    const t = new Date(r.at).getTime();
-    if (isNaN(t)) return;
-    if (first[r.email] === undefined || t < first[r.email]) first[r.email] = t;
+    if (r.registeredAt) {
+      const t = new Date(r.registeredAt).getTime();
+      if (!isNaN(t) && (reg[r.email] === undefined || t < reg[r.email])) reg[r.email] = t;
+    }
+    if (r.attended) {
+      const t = new Date(r.webinarAt || r.at).getTime();
+      if (!isNaN(t) && (att[r.email] === undefined || t < att[r.email])) att[r.email] = t;
+    }
   });
-  return first;
+  return { reg, att };
 }
-/** is this row the first time that person ever appeared? */
-function wbIsNew(r, first) {
-  const t = new Date(r.at).getTime();
-  return !isNaN(t) && first[r.email] === t;
+
+/** this row is the first webinar this person ever registered for */
+function wbFirstReg(r, first) {
+  if (!r.registeredAt) return false;
+  const t = new Date(r.registeredAt).getTime();
+  return !isNaN(t) && first.reg[r.email] === t;
+}
+/** this row is the first webinar this person ever actually attended */
+function wbFirstAtt(r, first) {
+  if (!r.attended) return false;
+  const t = new Date(r.webinarAt || r.at).getTime();
+  return !isNaN(t) && first.att[r.email] === t;
+}
+/** new in any sense - used for the badge */
+function wbIsNew(r, first) { return wbFirstReg(r, first) || wbFirstAtt(r, first); }
+
+/** the two firsts for one person at one webinar, however we got here */
+function wbPersonFirsts(p, topic, first) {
+  const row = { email: p.email, registeredAt: p.registeredAt, attended: !!p.attended,
+    webinarAt: topic && topic.last, at: p.registeredAt || (topic && topic.last) };
+  const newReg = wbFirstReg(row, first);
+  const newAtt = wbFirstAtt(row, first);
+  return { newReg, newAtt, finallyCame: newAtt && !newReg };
+}
+
+/** the badges, worded the same everywhere they appear */
+function wbFirstBadges(f) {
+  return (f.newReg ? '<span class="wb-new" title="First webinar this person ever registered for">NEW</span> ' : '') +
+    (f.finallyCame
+      ? '<span class="wb-new first" title="Registered for earlier webinars but never attended - this is the first time they turned up">1st SHOW</span> '
+      : '');
 }
 
 /** how many different webinars each person turns up in, across everything
@@ -1135,7 +1177,9 @@ function wbApplyFilters(rows, first) {
     if (wbF.source !== 'all' && r.source !== wbF.source) return false;
     if (wbF.status === 'attended' && !r.attended) return false;
     if (wbF.status === 'no' && r.attended) return false;
-    if (wbF.seen === 'new' && !wbIsNew(r, first)) return false;
+    if (wbF.seen === 'newreg' && !wbFirstReg(r, first)) return false;
+    if (wbF.seen === 'newatt' && !wbFirstAtt(r, first)) return false;
+    if (wbF.seen === 'finally' && !(wbFirstAtt(r, first) && !wbFirstReg(r, first))) return false;
     if (wbF.seen === 'returning' && wbIsNew(r, first)) return false;
     return true;
   });
@@ -1251,6 +1295,11 @@ function viewWebinarsAnalytics() {
   const uniq = Object.keys(people);
   const newcomers = shown.filter(r => wbIsNew(r, first));
   const newPeople = Array.from(new Set(newcomers.map(r => r.email)));
+  const firstRegs = Array.from(new Set(shown.filter(r => wbFirstReg(r, first)).map(r => r.email)));
+  const firstAtts = Array.from(new Set(shown.filter(r => wbFirstAtt(r, first)).map(r => r.email)));
+  /* registered before, never came, and has now finally turned up */
+  const finallyCame = Array.from(new Set(shown
+    .filter(r => wbFirstAtt(r, first) && !wbFirstReg(r, first)).map(r => r.email)));
   const attendedRows = shown.filter(r => r.attended);
   const rate = shown.length ? Math.round(attendedRows.length / shown.length * 100) : 0;
 
@@ -1273,7 +1322,8 @@ function viewWebinarsAnalytics() {
           return '<option value="' + v + '"' + (wbF.status === v ? ' selected' : '') + '>' + l + '</option>';
         }).join('') + '</select></label>' +
       '<label class="wb-f"><span>Audience</span><select class="inp sort-sel" data-wbf="seen">' +
-        ['all,Everyone', 'new,First time', 'returning,Returning'].map(o => {
+        ['all,Everyone', 'newreg,First time registering', 'newatt,First time attending',
+         'finally,Registered before - first time showing up', 'returning,Been here before'].map(o => {
           const [v, l] = o.split(',');
           return '<option value="' + v + '"' + (wbF.seen === v ? ' selected' : '') + '>' + l + '</option>';
         }).join('') + '</select></label>' +
@@ -1285,10 +1335,19 @@ function viewWebinarsAnalytics() {
   const kpis = '<div class="kpis">' +
     kpi('Registrations', shown.length, uniq.length + ' different people', true) +
     kpi('Attended', attendedRows.length, rate + '% of registrations') +
-    kpi('First-timers here', newPeople.length,
-      uniq.length ? Math.round(newPeople.length / uniq.length * 100) + '% had never registered before' : '0%') +
-    kpi('Come back for more', repeatPeople.length,
-      uniq.length ? Math.round(repeatPeople.length / uniq.length * 100) + '% attend 2+ webinars' : '0%') +
+    kpi('First time registering', firstRegs.length,
+      uniq.length ? Math.round(firstRegs.length / uniq.length * 100) + '% had never signed up before' : '0%') +
+    kpi('First time attending', firstAtts.length,
+      finallyCame.length
+        ? finallyCame.length + ' had registered before but never came'
+        : 'all of them were new sign-ups too') +
+    '</div>' +
+    '<div class="tiny muted" style="margin:-6px 0 14px">' +
+      '<b>' + repeatPeople.length + '</b> of these people attend 2 or more webinars. ' +
+      (loadedTopics < all.length
+        ? '&ldquo;First time&rdquo; is judged against the ' + loadedTopics + ' topic' +
+          (loadedTopics === 1 ? '' : 's') + ' loaded so far &mdash; load the rest for a complete history.'
+        : 'Judged against every topic in the account.') +
     '</div>';
 
   /* the people themselves, newest first */
@@ -1303,10 +1362,15 @@ function viewWebinarsAnalytics() {
     '<th>Name</th><th>Email</th><th>Webinars</th><th>Attended</th><th>City</th><th>Source</th><th>First seen</th>' +
     '</tr></thead><tbody>' +
     table.map(({ email, p }) => {
-      const isNew = newPeople.indexOf(email) >= 0;
+      const newReg = firstRegs.indexOf(email) >= 0;
+      const newAtt = firstAtts.indexOf(email) >= 0;
+      const camAtLast = finallyCame.indexOf(email) >= 0;
       const r0 = p.rows[0];
       return '<tr><td><div class="n">' + esc(p.name) +
-          (isNew ? ' <span class="wb-new">NEW</span>' : '') + '</div></td>' +
+          (newReg ? ' <span class="wb-new">NEW</span>' : '') +
+          (camAtLast ? ' <span class="wb-new first">1st SHOW</span>'
+            : (newAtt && !newReg ? ' <span class="wb-new first">1st SHOW</span>' : '')) +
+          '</div></td>' +
         '<td class="tiny"><a href="mailto:' + esc(email) + '">' + esc(email) + '</a></td>' +
         '<td>' + p.rows.length + '</td>' +
         '<td>' + (p.attended
@@ -1398,6 +1462,7 @@ function viewWebinarsMap() {
   const visible = wbVisibleTopics();
   const loaded = visible.filter(t => wbRuns[t.key] && wbRuns[t.key].agg);
   const idx = wbAttendeeIndex(visible);
+  const mapFirsts = wbFirstSeen(wbRows());
   const repeat = Object.keys(idx).filter(k => idx[k].topics.length > 1);
   const focus = wbFocus && idx[wbFocus] ? idx[wbFocus] : null;
 
@@ -1412,8 +1477,7 @@ function viewWebinarsMap() {
     const cards = people.map(p => {
       const rec = idx[p.email] || { topics: [], webinars: [] };
       const n = rec.topics.length;
-      /* only one webinar on record means we have not seen them before */
-      const fresh = (rec.webinars || []).length <= 1;
+      const pf = wbPersonFirsts(p, t, mapFirsts);
       const linked = focus && p.email === focus.email;
       return '<div class="om-person ' + (linked ? 'linked' : (focus ? 'faded' : '')) +
         (p.attended ? '' : ' wb-missed') + '" ' +
@@ -1421,8 +1485,7 @@ function viewWebinarsMap() {
         (p.attended ? ' - attended' : ' - registered but did not attend') +
         (n > 1 ? ', ' + n + ' webinars attended' : '') + '">' +
         leadAvatar(p.name || p.email) +
-        '<div class="om-txt"><b>' + esc(p.name || p.email) +
-          (fresh ? ' <span class="wb-new">NEW</span>' : '') + '</b>' +
+        '<div class="om-txt"><b>' + esc(p.name || p.email) + ' ' + wbFirstBadges(pf) + '</b>' +
           '<span>' + (p.attended
             ? '<span class="wb-tag yes">attended</span>' +
               (p.minutes ? ' ' + p.minutes + ' min' : '')
@@ -1612,6 +1675,16 @@ function viewWebinarTopic(key) {
   if (!st) { wbLoadRuns(topic); }
   const agg = st && st.agg;
   const filter = (st && st.filter) || 'all';
+  /* judged against every topic loaded, not just this one */
+  const topicFirsts = wbFirstSeen(wbRows());
+  let topicNewReg = 0, topicFinally = 0;
+  if (agg) {
+    agg.people.forEach(p => {
+      const f = wbPersonFirsts(p, topic, topicFirsts);
+      if (f.newReg) topicNewReg++;
+      if (f.finallyCame) topicFinally++;
+    });
+  }
 
   const peopleRows = agg ? agg.people.filter(p =>
     filter === 'all' ? true : filter === 'attended' ? p.attended : !p.attended) : [];
@@ -1634,7 +1707,8 @@ function viewWebinarTopic(key) {
               ((st.runs || []).length === 1 ? '' : 's'), true) +
             kpi('Turned up', agg.registered - agg.noShow, agg.rate + '% of registrations') +
             kpi('No-shows', agg.noShow, 'registered but did not attend') +
-            kpi('Unique people', agg.people.length, agg.walkIns ? agg.walkIns + ' attended without registering' : 'no walk-ins') +
+            kpi('First-timers', topicNewReg,
+              topicFinally ? topicFinally + ' more attended for the first time' : 'first-ever sign-ups') +
           '</div>' +
           (st.truncated ? '<div class="card" style="margin-bottom:14px;border-left:3px solid var(--gold)">' +
             '<div class="card-b tiny">This topic has run ' + topic.count + ' times. Showing the 20 most recent, ' +
@@ -1647,7 +1721,8 @@ function viewWebinarTopic(key) {
           '<th>Name</th><th>Email</th><th>Status</th><th>Watched</th><th>Sessions</th><th>Where</th>' +
           '</tr></thead><tbody>' +
           (peopleRows.length ? peopleRows.map(p =>
-            '<tr><td><div class="n">' + esc(p.name || p.email) + '</div>' +
+            '<tr><td><div class="n">' + esc(p.name || p.email) + ' ' +
+              wbFirstBadges(wbPersonFirsts(p, topic, topicFirsts)) + '</div>' +
               (p.walkIn ? '<span class="pill">walk-in</span>' : '') + '</td>' +
             '<td class="tiny"><a href="mailto:' + esc(p.email) + '">' + esc(p.email) + '</a></td>' +
             '<td>' + (p.attended
