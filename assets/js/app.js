@@ -595,6 +595,67 @@ function wireStatsHover() {
   svg.addEventListener('touchend', leave);
 }
 
+/* ---------------- dashboard furniture ----------------
+   Pastel stat tiles, two dial gauges and a 14-day spark bar.
+   Every delta here is computed from real data - a tile that invents
+   "+2.5%" because the design had one would be worse than no delta.   */
+
+/** a tile: icon chip, value, an honest delta, label */
+function tile(opts) {
+  const d = opts.delta;
+  const badge = d
+    ? '<span class="t-delta ' + (d.dir || '') + '">' + (d.dir === 'up' ? '&#9650; ' : d.dir === 'down' ? '&#9660; ' : '') +
+      esc(d.text) + '</span>'
+    : '';
+  return '<div class="tile ' + opts.tone + '">' +
+    '<div class="t-top"><span class="t-ic">' + opts.icon + '</span>' + badge + '</div>' +
+    '<div class="t-val">' + opts.value + '</div>' +
+    '<div class="t-lab">' + esc(opts.label) + '</div>' +
+    (opts.foot ? '<div class="t-foot">' + opts.foot + '</div>' : '') +
+    '</div>';
+}
+
+/** a dial - the number is printed inside, so it never depends on the arc */
+function gauge(pct, label, sub, colour) {
+  const p = Math.max(0, Math.min(100, Math.round(pct || 0)));
+  const r = 42, c = 2 * Math.PI * r;
+  return '<div class="gauge">' +
+    '<svg viewBox="0 0 100 100" aria-label="' + esc(label + ': ' + p + '%') + '">' +
+      '<circle cx="50" cy="50" r="' + r + '" fill="none" stroke="rgba(16,24,40,.08)" stroke-width="9"/>' +
+      '<circle cx="50" cy="50" r="' + r + '" fill="none" stroke="' + colour + '" stroke-width="9" ' +
+        'stroke-linecap="round" stroke-dasharray="' + (c * p / 100).toFixed(1) + ' ' + c.toFixed(1) + '" ' +
+        'transform="rotate(-90 50 50)"/>' +
+      '<text x="50" y="55" text-anchor="middle" class="g-num">' + p + '%</text>' +
+    '</svg>' +
+    '<div class="g-lab"><b>' + esc(label) + '</b><span>' + esc(sub) + '</span></div>' +
+  '</div>';
+}
+
+/** fourteen days of lead volume, as a small bar strip */
+function sparkBars(contacts) {
+  const days = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i);
+    days.push({ at: d, n: 0 });
+  }
+  contacts.forEach(c => {
+    const t = new Date(c.createdAt); t.setHours(0, 0, 0, 0);
+    const hit = days.find(d => d.at.getTime() === t.getTime());
+    if (hit) hit.n++;
+  });
+  const max = Math.max(1, ...days.map(d => d.n));
+  const peak = days.reduce((a, b) => (b.n > a.n ? b : a), days[0]);
+  return '<div class="spark">' + days.map(d =>
+    '<div class="sp-col" title="' + esc(fmtDate(d.at.toISOString())) + ': ' + d.n +
+      (d.n === 1 ? ' lead' : ' leads') + '">' +
+      '<span style="height:' + Math.max(3, Math.round(d.n / max * 100)) + '%"' +
+        (d === peak && d.n > 0 ? ' class="on"' : '') + '></span>' +
+      '<i>' + d.at.getDate() + '</i></div>').join('') + '</div>' +
+    '<div class="sp-foot"><span>' + esc(fmtDate(days[0].at.toISOString())) + '</span>' +
+    '<b>' + (peak.n > 0 ? 'busiest: ' + peak.n + ' on ' + fmtDate(peak.at.toISOString()) : 'no leads yet') + '</b>' +
+    '<span>' + esc(fmtDate(days[13].at.toISOString())) + '</span></div>';
+}
+
 /* ------------------------------------------------------------ dashboard */
 function viewDashboard() {
   const d = S.db();
@@ -609,14 +670,38 @@ function viewDashboard() {
   const myTasks = whoKpi ? d.tasks.filter(t => !t.done && ownedBy(t, whoKpi)) : [];
   const myOverdue = myTasks.filter(t => daysFromToday(t.dueAt) < 0).length;
 
-  const kpis = '<div class="kpis">' +
-    (whoKpi
-      ? kpi('Assigned to you', myTasks.length,
-          myOverdue ? myOverdue + ' overdue' : (myTasks.length ? 'nothing overdue' : 'you are clear'), true)
-      : kpi('Pending outreach', open.length, overdue.length + ' overdue &middot; ' + todayTasks.length + ' due today', true)) +
-    kpi('Team pending', open.length, overdue.length + ' overdue &middot; ' + todayTasks.length + ' due today') +
-    kpi('New leads (7 days)', week.length, d.contacts.length + ' contacts total') +
-    kpi('Open pipeline value', short(pipeValue), openOpps.length + ' open opportunities') + '</div>';
+  /* week on week, from the data - never a decorative percentage */
+  const inWindow = (iso, from, to) => {
+    const n = daysFromToday(iso);
+    return n <= from && n > to;
+  };
+  const leads7 = d.contacts.filter(c => inWindow(c.createdAt, 0, -7)).length;
+  const leadsPrev7 = d.contacts.filter(c => inWindow(c.createdAt, -7, -14)).length;
+  const leadDelta = leadsPrev7
+    ? Math.round((leads7 - leadsPrev7) / leadsPrev7 * 100)
+    : (leads7 ? 100 : 0);
+  const clearedWeek = d.tasks.filter(t => t.done && t.doneAt && inWindow(t.doneAt, 0, -7)).length;
+  const valueWeek = openOpps
+    .filter(o => inWindow(o.createdAt, 0, -7))
+    .reduce((s2, o) => s2 + (Number(o.value) || 0), 0);
+
+  const kpis = '<div class="tiles">' +
+    tile({ tone: 'lav', icon: '&#9873;', label: whoKpi ? 'Assigned to you' : 'Pending outreach',
+      value: whoKpi ? myTasks.length : open.length,
+      delta: myOverdue ? { dir: 'down', text: myOverdue + ' overdue' } : null,
+      foot: whoKpi ? (myTasks.length ? 'people waiting on you' : 'you are clear') : overdue.length + ' overdue' }) +
+    tile({ tone: 'mint', icon: '&#10003;', label: 'Team pending', value: open.length,
+      delta: clearedWeek ? { dir: 'up', text: clearedWeek + ' cleared' } : null,
+      foot: todayTasks.length + ' due today' }) +
+    tile({ tone: 'pink', icon: '&#9733;', label: 'New leads this week', value: leads7,
+      delta: leadsPrev7 || leads7
+        ? { dir: leadDelta > 0 ? 'up' : leadDelta < 0 ? 'down' : '', text: Math.abs(leadDelta) + '%' }
+        : null,
+      foot: leadsPrev7 + ' the week before' }) +
+    tile({ tone: 'cream', icon: '&#9679;', label: 'Open pipeline', value: short(pipeValue),
+      delta: valueWeek ? { dir: 'up', text: short(valueWeek) } : null,
+      foot: openOpps.length + ' opportunities' }) +
+  '</div>';
 
   /* ---- the queue, sliced by who owns it ---- */
   const who = me();
@@ -711,6 +796,34 @@ function viewDashboard() {
       }).join('') : '<tr><td colspan="8"><div class="empty">No submissions yet. Open one of your forms and try it.</div></td></tr>') +
       '</tbody></table></div></div>';
 
+  const last30 = d.tasks.filter(t => inWindow(t.createdAt, 0, -30));
+  const cleared30 = last30.filter(t => t.done).length;
+  const clearedPct = last30.length ? cleared30 / last30.length * 100 : 0;
+  const actioned = d.contacts.filter(c => inWindow(c.createdAt, 0, -30));
+  const touched = actioned.filter(c => d.tasks.some(t => t.contactId === c.id && t.done)).length;
+  const touchedPct = actioned.length ? touched / actioned.length * 100 : 0;
+
+  const flowCard =
+    '<div class="card"><div class="card-h"><h3>Lead flow</h3>' +
+      '<span class="tiny muted">last 14 days</span><div class="spacer"></div>' +
+      '<a class="btn btn-sm" href="#/analytics">Full analytics</a></div>' +
+      '<div class="card-b">' + sparkBars(d.contacts) + '</div></div>';
+
+  const focusCard =
+    '<div class="focus">' +
+      '<div class="f-head">' + (overdue.length
+        ? '<b>' + overdue.length + ' overdue</b><span>Somebody has been waiting longer than they should.</span>'
+        : open.length
+          ? '<b>' + open.length + ' to reach out to</b><span>Nothing overdue - the queue is under control.</span>'
+          : '<b>All clear</b><span>Every lead that came in has been actioned.</span>') + '</div>' +
+      '<a class="btn btn-gold" href="#/dashboard" data-act="scope-mine">' +
+        (whoKpi && myTasks.length ? 'Open my ' + myTasks.length + ' tasks' : 'Open the queue') + '</a>' +
+    '</div>' +
+    '<div class="card gauges"><div class="card-b">' +
+      gauge(clearedPct, 'Tasks cleared', cleared30 + ' of ' + last30.length + ' in 30 days', '#0f9d63') +
+      gauge(touchedPct, 'Leads actioned', touched + ' of ' + actioned.length + ' followed up', '#3366cc') +
+    '</div></div>';
+
   shell('dashboard',
     title(whoKpi ? greeting() + ', ' + whoKpi.name.split(' ')[0] : 'Dashboard',
       whoKpi
@@ -722,7 +835,9 @@ function viewDashboard() {
     '<a class="btn" href="#/analytics">&#9680; Analytics</a>' +
     '<button class="btn" data-act="try-form">Open a form as a lead</button>' +
     '<button class="btn btn-gold" data-act="new-form">+ New form</button>',
-    kpis + '<div class="two"><div>' + tasksCard + subsCard + '</div><div>' +
+    kpis +
+    '<div class="two dash-mid"><div>' + flowCard + '</div><div>' + focusCard + '</div></div>' +
+    '<div class="two" style="margin-top:16px"><div>' + tasksCard + subsCard + '</div><div>' +
       formsCard + activityCard + '</div></div>');
 }
 const kpi = (lab, val, foot, accent) =>
