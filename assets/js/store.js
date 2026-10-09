@@ -174,7 +174,11 @@ function seedData() {
       doneAt: taskDone ? dayShift(dayOff + 1) : null, createdAt: created
     });
     out.activity.push({
-      id: uid('ac'), at: created, type: 'submission',
+      /* nudge each seeded entry apart so the demo feed has a definite order -
+         backwards, so nothing seeded is ever stamped in the future and jumps
+         ahead of something that really just happened */
+      id: uid('ac'), at: new Date(new Date(created).getTime() - out.activity.length * 1000).toISOString(),
+      type: 'submission',
       text: name + ' submitted "' + form.name + '"', pipelineId: form.pipelineId
     });
   });
@@ -344,9 +348,17 @@ const stageName = (pid, sid) => {
 };
 const oppsIn = (pid) => DB.opportunities.filter(o => o.pipelineId === pid && o.status === 'open');
 const formsFor = (pid) => DB.forms.filter(f => f.pipelineId === pid);
-/** newest first, whichever backend is in use */
+/** Newest first, whichever backend is in use.
+    Two events can land in the same millisecond - a stage move right after a
+    submission, say - and a plain timestamp sort then leaves their order to
+    chance, so the newest may not come first. Ties fall back to insertion
+    order, which is the later of the two in both back ends. */
 const activityFeed = (n) =>
-  DB.activity.slice().sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, n || 20);
+  DB.activity
+    .map((a, i) => ({ a, i }))
+    .sort((x, y) => String(y.a.at).localeCompare(String(x.a.at)) || (y.i - x.i))
+    .slice(0, n || 20)
+    .map(x => x.a);
 
 /* =========================================================== pipelines */
 async function addPipeline(name, stageNames) {
