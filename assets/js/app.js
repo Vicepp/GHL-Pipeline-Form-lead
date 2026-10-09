@@ -804,12 +804,12 @@ function viewDashboard() {
   const touchedPct = actioned.length ? touched / actioned.length * 100 : 0;
 
   const flowCard =
-    '<div class="card"><div class="card-h"><h3>Lead flow</h3>' +
+    '<div class="card flowcard"><div class="card-h"><h3>Lead flow</h3>' +
       '<span class="tiny muted">last 14 days</span><div class="spacer"></div>' +
       '<a class="btn btn-sm" href="#/analytics">Full analytics</a></div>' +
       '<div class="card-b">' + sparkBars(d.contacts) + '</div></div>';
 
-  const focusCard =
+  const dashFocus =
     '<div class="focus">' +
       '<div class="f-head">' + (overdue.length
         ? '<b>' + overdue.length + ' overdue</b><span>Somebody has been waiting longer than they should.</span>'
@@ -836,7 +836,7 @@ function viewDashboard() {
     '<button class="btn" data-act="try-form">Open a form as a lead</button>' +
     '<button class="btn btn-gold" data-act="new-form">+ New form</button>',
     kpis +
-    '<div class="two dash-mid"><div>' + flowCard + '</div><div>' + focusCard + '</div></div>' +
+    '<div class="two dash-mid"><div>' + flowCard + '</div><div>' + dashFocus + '</div></div>' +
     '<div class="two" style="margin-top:16px"><div>' + tasksCard + subsCard + '</div><div>' +
       formsCard + activityCard + '</div></div>');
 }
@@ -1341,6 +1341,7 @@ function wbRateBars(title, items, note) {
 /** registered vs attended per webinar - two series, so it gets a legend */
 function wbTopicChart(rows) {
   const by = {};
+  if (!rows.length) return '<div class="card"><div class="empty">Nothing matches these filters.</div></div>';
   rows.forEach(r => {
     if (!by[r.topicKey]) by[r.topicKey] = { name: r.topicName, reg: 0, att: 0 };
     by[r.topicKey].reg++;
@@ -1447,23 +1448,48 @@ function viewWebinarsAnalytics() {
 
   const seenCount = wbTimesSeen(rows);
   const repeatPeople = uniq.filter(e => (seenCount[e] || 0) > 1);
-  const kpis = '<div class="kpis">' +
-    kpi('Registrations', shown.length, uniq.length + ' different people', true) +
-    kpi('Attended', attendedRows.length, rate + '% of registrations') +
-    kpi('First time registering', firstRegs.length,
-      uniq.length ? Math.round(firstRegs.length / uniq.length * 100) + '% had never signed up before' : '0%') +
-    kpi('First time attending', firstAtts.length,
-      finallyCame.length
-        ? finallyCame.length + ' had registered before but never came'
-        : 'all of them were new sign-ups too') +
+  const rateRows = wbRateBy(shown, 'source');
+  const best = rateRows[0];
+  const worst = rateRows.length > 1 ? rateRows[rateRows.length - 1] : null;
+
+  const kpis = '<div class="tiles">' +
+    tile({ tone: 'lav', icon: '&#9733;', label: 'Registrations', value: shown.length,
+      delta: { text: uniq.length + ' people' },
+      foot: 'across ' + loadedTopics + ' loaded topic' + (loadedTopics === 1 ? '' : 's') }) +
+    tile({ tone: 'mint', icon: '&#10003;', label: 'Turned up', value: attendedRows.length,
+      delta: { dir: rate >= 45 ? 'up' : rate >= 30 ? '' : 'down', text: rate + '%' },
+      foot: (shown.length - attendedRows.length) + ' did not attend' }) +
+    tile({ tone: 'pink', icon: '&#9873;', label: 'First time registering', value: firstRegs.length,
+      delta: uniq.length ? { text: Math.round(firstRegs.length / uniq.length * 100) + '% of people' } : null,
+      foot: 'never signed up before' }) +
+    tile({ tone: 'cream', icon: '&#9728;', label: 'First time attending', value: firstAtts.length,
+      delta: finallyCame.length ? { dir: 'up', text: finallyCame.length + ' finally came' } : null,
+      foot: finallyCame.length ? 'had registered before, never showed' : 'all were new sign-ups too' }) +
+  '</div>';
+
+  /* the one line worth acting on, picked from the data rather than decided here */
+  const focusCard =
+    '<div class="focus">' +
+      '<div class="f-head">' +
+        (best && worst && best.k !== worst.k
+          ? '<b>' + esc(best.k) + ' converts best</b>' +
+            '<span>' + best.rate + '% of its registrants turn up, against ' + worst.rate +
+            '% from ' + esc(worst.k) + '. Same effort, different return.</span>'
+          : finallyCame.length
+            ? '<b>' + finallyCame.length + ' finally showed up</b>' +
+              '<span>They had registered before without attending. Worth a personal follow-up.</span>'
+            : '<b>' + repeatPeople.length + ' keep coming back</b>' +
+              '<span>People who have attended two or more of your webinars.</span>') +
+      '</div>' +
+      '<button class="btn btn-gold" data-act="wb-focus-src" data-v="' +
+        esc(best ? best.k : '') + '">' +
+        (best ? 'See everyone from ' + esc(best.k) : 'See the repeat attenders') + '</button>' +
     '</div>' +
-    '<div class="tiny muted" style="margin:-6px 0 14px">' +
-      '<b>' + repeatPeople.length + '</b> of these people attend 2 or more webinars. ' +
-      (loadedTopics < all.length
-        ? '&ldquo;First time&rdquo; is judged against the ' + loadedTopics + ' topic' +
-          (loadedTopics === 1 ? '' : 's') + ' loaded so far &mdash; load the rest for a complete history.'
-        : 'Judged against every topic in the account.') +
-    '</div>';
+    '<div class="card gauges"><div class="card-b">' +
+      gauge(rate, 'Attendance', attendedRows.length + ' of ' + shown.length + ' registrations', '#0f9d63') +
+      gauge(uniq.length ? repeatPeople.length / uniq.length * 100 : 0, 'Come back',
+        repeatPeople.length + ' of ' + uniq.length + ' attend 2+', '#3366cc') +
+    '</div></div>';
 
   /* the people themselves, newest first */
   const table = Object.keys(people).map(e => ({ email: e, p: people[e] }))
@@ -1499,13 +1525,15 @@ function viewWebinarsAnalytics() {
 
   shell('webinars', head,
     filters + kpis +
-    wbTopicChart(shown) +
-    wbBars('Where they came from', wbCount(shown, 'source'), shown.length, 'registrations by source') +
-    wbRateBars('Which sources actually show up', wbRateBy(shown, 'source'),
-      'attendance rate, 5+ registrations only') +
-    wbBars('Top cities', wbCount(shown, 'city'), shown.length, 'registrations by city') +
-    wbBars('First-timers by source', wbCount(newcomers, 'source'), newcomers.length,
-      'which channels bring new people') +
+    '<div class="two dash-mid"><div>' + wbTopicChart(shown) + '</div><div>' + focusCard + '</div></div>' +
+    '<div class="two" style="margin-top:16px"><div>' +
+      wbRateBars('Which sources actually show up', rateRows, 'attendance rate, 5+ registrations only') +
+      wbBars('Top cities', wbCount(shown, 'city'), shown.length, 'registrations by city') +
+    '</div><div>' +
+      wbBars('Where they came from', wbCount(shown, 'source'), shown.length, 'registrations by source') +
+      wbBars('First-timers by source', wbCount(newcomers, 'source'), newcomers.length,
+        'which channels bring new people') +
+    '</div></div>' +
     peopleCard);
 }
 
@@ -2906,6 +2934,9 @@ document.addEventListener('click', e => {
     case 'wb-stats': wbLoadAllStats(); return;
     case 'wb-stats-stop': wbStatsStop = true; return;
     case 'wb-view': setWebinarsView(t.dataset.v); render(); return;
+    case 'wb-focus-src':
+      if (t.dataset.v) wbF.source = t.dataset.v; else wbF.seen = 'returning';
+      render(); return;
     case 'wb-f-clear':
       wbF = { topic: 'all', city: 'all', source: 'all', status: 'all', seen: 'all' };
       wbBrand = 'all'; render(); return;

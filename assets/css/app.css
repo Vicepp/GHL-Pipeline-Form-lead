@@ -765,7 +765,9 @@ body{
   .sp-col>i{display:none}
 }
 
-/* the spark card is as tall as the panel beside it, so let the bars use it */
-.dash-mid>div:first-child .card{display:flex;flex-direction:column}
-.dash-mid>div:first-child .card-b{flex:1;display:flex;flex-direction:column;justify-content:flex-end}
-.dash-mid .spark{flex:1;min-height:120px}
+/* only the spark card stretches its content - scoped by class, because the
+   webinar analytics puts a bar chart in the same slot and that must stay
+   top-aligned rather than being pushed to the bottom of a tall card */
+.flowcard{display:flex;flex-direction:column}
+.flowcard .card-b{flex:1;display:flex;flex-direction:column;justify-content:flex-end}
+.flowcard .spark{flex:1;min-height:120px}
