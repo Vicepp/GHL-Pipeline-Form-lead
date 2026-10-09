@@ -1049,6 +1049,287 @@ function wbVisibleTopics() {
   });
 }
 
+/* ================= WEBINAR ANALYTICS =================
+   Every registration across the loaded topics, as one filterable set.
+
+   Bars use #3366cc, the single categorical slot already validated against
+   a light surface for the Statistics chart. One series means no legend is
+   needed - the heading names it - and every value is printed beside its
+   bar, so nothing depends on colour or on hovering.                      */
+
+const WB_BAR = '#3366cc';
+let wbF = { topic: 'all', city: 'all', source: 'all', status: 'all', seen: 'all' };
+
+/** flatten the loaded topics into one row per person per webinar */
+function wbRows() {
+  const rows = [];
+  (wbTopics || []).forEach(t => {
+    const st = wbRuns[t.key];
+    if (!st || !st.agg) return;
+    st.agg.people.forEach(p => {
+      rows.push({
+        email: p.email, name: p.name || p.email,
+        topicKey: t.key, topicName: t.name, brand: t.brand, topicLast: t.last,
+        attended: !!p.attended, walkIn: !!p.walkIn, minutes: p.minutes || 0,
+        city: (p.city || '').trim() || 'Unknown',
+        country: (p.country || '').trim(),
+        source: (p.source || 'Unknown').trim(),
+        at: p.registeredAt || t.last
+      });
+    });
+  });
+  return rows;
+}
+
+/** first time we ever saw each email, so newcomers can be told apart */
+function wbFirstSeen(rows) {
+  const first = {};
+  rows.forEach(r => {
+    const t = new Date(r.at).getTime();
+    if (isNaN(t)) return;
+    if (first[r.email] === undefined || t < first[r.email]) first[r.email] = t;
+  });
+  return first;
+}
+/** is this row the first time that person ever appeared? */
+function wbIsNew(r, first) {
+  const t = new Date(r.at).getTime();
+  return !isNaN(t) && first[r.email] === t;
+}
+
+/** how many different webinars each person turns up in, across everything
+    loaded - not just the current filter, or "repeat" would change meaning
+    every time a filter moved */
+function wbTimesSeen(rows) {
+  const m = {};
+  rows.forEach(r => {
+    if (!m[r.email]) m[r.email] = {};
+    m[r.email][r.topicKey] = true;
+  });
+  const out = {};
+  Object.keys(m).forEach(e => { out[e] = Object.keys(m[e]).length; });
+  return out;
+}
+
+/** attendance rate per source - the number that actually decides spend */
+function wbRateBy(rows, key) {
+  const m = {};
+  rows.forEach(r => {
+    const k = r[key] || 'Unknown';
+    if (!m[k]) m[k] = { n: 0, a: 0 };
+    m[k].n++;
+    if (r.attended) m[k].a++;
+  });
+  return Object.keys(m)
+    .map(k => ({ k, n: m[k].n, a: m[k].a, rate: Math.round(m[k].a / m[k].n * 100) }))
+    /* a 100% rate off two people is noise, not a finding */
+    .filter(x => x.n >= 5)
+    .sort((a, b) => b.rate - a.rate);
+}
+
+function wbApplyFilters(rows, first) {
+  return rows.filter(r => {
+    if (wbBrand !== 'all' && r.brand !== wbBrand) return false;
+    if (wbF.topic !== 'all' && r.topicKey !== wbF.topic) return false;
+    if (wbF.city !== 'all' && r.city !== wbF.city) return false;
+    if (wbF.source !== 'all' && r.source !== wbF.source) return false;
+    if (wbF.status === 'attended' && !r.attended) return false;
+    if (wbF.status === 'no' && r.attended) return false;
+    if (wbF.seen === 'new' && !wbIsNew(r, first)) return false;
+    if (wbF.seen === 'returning' && wbIsNew(r, first)) return false;
+    return true;
+  });
+}
+
+const wbCount = (rows, key) => {
+  const m = {};
+  rows.forEach(r => { const k = r[key] || 'Unknown'; m[k] = (m[k] || 0) + 1; });
+  return Object.keys(m).map(k => ({ k, n: m[k] })).sort((a, b) => b.n - a.n);
+};
+
+/** a horizontal bar list - value printed, so nothing rests on colour alone */
+function wbBars(title, items, total, note) {
+  if (!items.length) return '';
+  const max = Math.max(1, items[0].n);
+  return '<div class="card" style="margin-top:16px"><div class="card-h"><h3>' + esc(title) + '</h3>' +
+    '<div class="spacer"></div>' + (note ? '<span class="tiny muted">' + esc(note) + '</span>' : '') + '</div>' +
+    '<div class="card-b"><div class="wb-bars">' +
+    items.slice(0, 12).map(x =>
+      '<div class="wb-bar"><div class="wb-bl"><span>' + esc(x.k) + '</span>' +
+        '<b>' + x.n + '<i>' + (total ? Math.round(x.n / total * 100) + '%' : '') + '</i></b></div>' +
+        '<div class="wb-track"><span style="width:' + Math.round(x.n / max * 100) + '%;background:' +
+        WB_BAR + '"></span></div></div>').join('') +
+    (items.length > 12 ? '<div class="tiny muted" style="margin-top:8px">+ ' + (items.length - 12) +
+      ' more, narrow it with the filters above</div>' : '') +
+    '</div></div></div>';
+}
+
+/** a rate per category: the bar is the percentage, the count sits beside it
+    so a high rate off a tiny sample cannot masquerade as a big finding */
+function wbRateBars(title, items, note) {
+  if (!items.length) return '';
+  return '<div class="card" style="margin-top:16px"><div class="card-h"><h3>' + esc(title) + '</h3>' +
+    '<div class="spacer"></div>' + (note ? '<span class="tiny muted">' + esc(note) + '</span>' : '') + '</div>' +
+    '<div class="card-b"><div class="wb-bars">' +
+    items.slice(0, 12).map(x =>
+      '<div class="wb-bar"><div class="wb-bl"><span>' + esc(x.k) + '</span>' +
+        '<b>' + x.rate + '%<i>' + x.a + ' of ' + x.n + '</i></b></div>' +
+        '<div class="wb-track"><span style="width:' + x.rate + '%;background:' +
+        (x.rate >= 50 ? '#0f9d63' : x.rate >= 35 ? WB_BAR : '#b8860b') + '"></span></div></div>').join('') +
+    '</div></div></div>';
+}
+
+/** registered vs attended per webinar - two series, so it gets a legend */
+function wbTopicChart(rows) {
+  const by = {};
+  rows.forEach(r => {
+    if (!by[r.topicKey]) by[r.topicKey] = { name: r.topicName, reg: 0, att: 0 };
+    by[r.topicKey].reg++;
+    if (r.attended) by[r.topicKey].att++;
+  });
+  const items = Object.keys(by).map(k => by[k]).sort((a, b) => b.reg - a.reg).slice(0, 10);
+  if (!items.length) return '';
+  const max = Math.max.apply(null, items.map(i => i.reg));
+  return '<div class="card" style="margin-top:16px"><div class="card-h"><h3>Turnout by webinar</h3>' +
+    '<div class="spacer"></div>' +
+    '<div class="st-legend"><span><i style="background:' + WB_BAR + '"></i>Registered</span>' +
+    '<span><i style="background:#0f9d63"></i>Attended</span></div></div>' +
+    '<div class="card-b"><div class="wb-bars">' +
+    items.map(i => '<div class="wb-bar"><div class="wb-bl"><span>' + esc(i.name) + '</span>' +
+      '<b>' + i.att + ' of ' + i.reg + '<i>' + (i.reg ? Math.round(i.att / i.reg * 100) + '%' : '0%') + '</i></b></div>' +
+      '<div class="wb-track dual">' +
+        '<span style="width:' + Math.round(i.reg / max * 100) + '%;background:' + WB_BAR + '"></span>' +
+        '<span class="over" style="width:' + Math.round(i.att / max * 100) + '%;background:#0f9d63"></span>' +
+      '</div></div>').join('') +
+    '</div></div></div>';
+}
+
+function wbSelect(name, label, values, current) {
+  return '<label class="wb-f"><span>' + esc(label) + '</span>' +
+    '<select class="inp sort-sel" data-wbf="' + name + '">' +
+    '<option value="all">All</option>' +
+    values.map(v => '<option value="' + esc(v.k) + '"' + (current === v.k ? ' selected' : '') + '>' +
+      esc(v.k) + ' (' + v.n + ')</option>').join('') +
+    '</select></label>';
+}
+
+function viewWebinarsAnalytics() {
+  if (!wbTopics && !wbLoading && !wbError) { wbLoadTopics(); }
+  const all = wbTopics || [];
+  const rows = wbRows();
+  const first = wbFirstSeen(rows);
+  const loadedTopics = all.filter(t => wbRuns[t.key] && wbRuns[t.key].agg).length;
+
+  const head = title('Webinars',
+    all.length + ' topics &middot; analytics across ' + loadedTopics + ' loaded topic' +
+    (loadedTopics === 1 ? '' : 's')) +
+    wbViewToggle() +
+    (wbStatsRun
+      ? '<span class="tiny muted">' + wbStatsDone + ' of ' + wbStatsOf + '&hellip;</span>' +
+        '<button class="btn btn-sm" data-act="wb-stats-stop">Stop</button>'
+      : '<button class="btn btn-sm btn-gold" data-act="wb-stats">Load attendance</button>');
+
+  if (wbError) { shell('webinars', head, wbErrorCard()); return; }
+  if (!rows.length) {
+    shell('webinars', head,
+      '<div class="card"><div class="empty">' +
+      (wbLoading || wbStatsRun ? 'Loading&hellip;'
+        : 'No attendance loaded yet.<br><br><button class="btn btn-gold" data-act="wb-stats">Load attendance</button>') +
+      '</div></div>');
+    return;
+  }
+
+  const shown = wbApplyFilters(rows, first);
+  const people = {};
+  shown.forEach(r => {
+    if (!people[r.email]) people[r.email] = { name: r.name, rows: [], attended: 0, minutes: 0 };
+    const p = people[r.email];
+    p.rows.push(r);
+    if (r.attended) p.attended++;
+    p.minutes += r.minutes;
+  });
+  const uniq = Object.keys(people);
+  const newcomers = shown.filter(r => wbIsNew(r, first));
+  const newPeople = Array.from(new Set(newcomers.map(r => r.email)));
+  const attendedRows = shown.filter(r => r.attended);
+  const rate = shown.length ? Math.round(attendedRows.length / shown.length * 100) : 0;
+
+  const topicOpts = wbCount(rows, 'topicKey').map(x => ({
+    k: x.k, n: x.n, label: (rows.find(r => r.topicKey === x.k) || {}).topicName
+  }));
+
+  const filters =
+    '<div class="card" style="margin-bottom:16px"><div class="card-b wb-filters">' +
+      '<label class="wb-f"><span>Webinar</span><select class="inp sort-sel" data-wbf="topic">' +
+        '<option value="all">All webinars</option>' +
+        topicOpts.map(o => '<option value="' + esc(o.k) + '"' + (wbF.topic === o.k ? ' selected' : '') + '>' +
+          esc(o.label) + ' (' + o.n + ')</option>').join('') +
+      '</select></label>' +
+      wbSelect('city', 'City', wbCount(rows, 'city'), wbF.city) +
+      wbSelect('source', 'Source', wbCount(rows, 'source'), wbF.source) +
+      '<label class="wb-f"><span>Status</span><select class="inp sort-sel" data-wbf="status">' +
+        ['all,Everyone', 'attended,Attended', 'no,Did not attend'].map(o => {
+          const [v, l] = o.split(',');
+          return '<option value="' + v + '"' + (wbF.status === v ? ' selected' : '') + '>' + l + '</option>';
+        }).join('') + '</select></label>' +
+      '<label class="wb-f"><span>Audience</span><select class="inp sort-sel" data-wbf="seen">' +
+        ['all,Everyone', 'new,First time', 'returning,Returning'].map(o => {
+          const [v, l] = o.split(',');
+          return '<option value="' + v + '"' + (wbF.seen === v ? ' selected' : '') + '>' + l + '</option>';
+        }).join('') + '</select></label>' +
+      '<button class="btn btn-sm" data-act="wb-f-clear">Clear filters</button>' +
+    '</div></div>';
+
+  const seenCount = wbTimesSeen(rows);
+  const repeatPeople = uniq.filter(e => (seenCount[e] || 0) > 1);
+  const kpis = '<div class="kpis">' +
+    kpi('Registrations', shown.length, uniq.length + ' different people', true) +
+    kpi('Attended', attendedRows.length, rate + '% of registrations') +
+    kpi('First-timers here', newPeople.length,
+      uniq.length ? Math.round(newPeople.length / uniq.length * 100) + '% had never registered before' : '0%') +
+    kpi('Come back for more', repeatPeople.length,
+      uniq.length ? Math.round(repeatPeople.length / uniq.length * 100) + '% attend 2+ webinars' : '0%') +
+    '</div>';
+
+  /* the people themselves, newest first */
+  const table = Object.keys(people).map(e => ({ email: e, p: people[e] }))
+    .sort((a, b) => new Date(b.p.rows[0].at) - new Date(a.p.rows[0].at))
+    .slice(0, 200);
+
+  const peopleCard =
+    '<div class="card" style="margin-top:16px"><div class="card-h"><h3>People</h3><div class="spacer"></div>' +
+    '<span class="tiny muted">' + table.length + ' of ' + uniq.length + ' shown</span></div>' +
+    '<div class="scroll-x"><table class="tbl"><thead><tr>' +
+    '<th>Name</th><th>Email</th><th>Webinars</th><th>Attended</th><th>City</th><th>Source</th><th>First seen</th>' +
+    '</tr></thead><tbody>' +
+    table.map(({ email, p }) => {
+      const isNew = newPeople.indexOf(email) >= 0;
+      const r0 = p.rows[0];
+      return '<tr><td><div class="n">' + esc(p.name) +
+          (isNew ? ' <span class="wb-new">NEW</span>' : '') + '</div></td>' +
+        '<td class="tiny"><a href="mailto:' + esc(email) + '">' + esc(email) + '</a></td>' +
+        '<td>' + p.rows.length + '</td>' +
+        '<td>' + (p.attended
+          ? '<span class="pill ok">' + p.attended + (p.minutes ? ' &middot; ' + p.minutes + 'm' : '') + '</span>'
+          : '<span class="pill bad">none</span>') + '</td>' +
+        '<td class="tiny muted">' + esc(r0.city) + '</td>' +
+        '<td><span class="pill">' + esc(r0.source) + '</span></td>' +
+        '<td class="tiny muted">' + (first[email] ? fmtDate(new Date(first[email]).toISOString()) : '-') + '</td></tr>';
+    }).join('') +
+    '</tbody></table></div></div>';
+
+  shell('webinars', head,
+    filters + kpis +
+    wbTopicChart(shown) +
+    wbBars('Where they came from', wbCount(shown, 'source'), shown.length, 'registrations by source') +
+    wbRateBars('Which sources actually show up', wbRateBy(shown, 'source'),
+      'attendance rate, 5+ registrations only') +
+    wbBars('Top cities', wbCount(shown, 'city'), shown.length, 'registrations by city') +
+    wbBars('First-timers by source', wbCount(newcomers, 'source'), newcomers.length,
+      'which channels bring new people') +
+    peopleCard);
+}
+
 /* ------------------- WEBINARS: map view -------------------
    One column per webinar topic, the people who attended beneath it.
    Clicking anyone traces every webinar they have attended, exactly as
@@ -1066,10 +1347,9 @@ let wbFocus = null;        /* the attendee whose history is being traced */
 
 function wbViewToggle() {
   const v = webinarsView();
-  return '<div class="seg">' +
-    '<button class="seg-btn ' + (v === 'map' ? 'on' : '') + '" data-act="wb-view" data-v="map">Map</button>' +
-    '<button class="seg-btn ' + (v === 'list' ? 'on' : '') + '" data-act="wb-view" data-v="list">List</button>' +
-    '</div>';
+  const b = (k, label) => '<button class="seg-btn ' + (v === k ? 'on' : '') +
+    '" data-act="wb-view" data-v="' + k + '">' + label + '</button>';
+  return '<div class="seg">' + b('map', 'Map') + b('list', 'List') + b('analytics', 'Analytics') + '</div>';
 }
 
 /** email -> every webinar that person signed up for, each with its outcome */
@@ -1130,8 +1410,10 @@ function viewWebinarsMap() {
       (b.minutes || 0) - (a.minutes || 0) ||
       String(a.name || a.email).localeCompare(String(b.name || b.email))) : [];
     const cards = people.map(p => {
-      const rec = idx[p.email] || { topics: [], missed: [] };
+      const rec = idx[p.email] || { topics: [], webinars: [] };
       const n = rec.topics.length;
+      /* only one webinar on record means we have not seen them before */
+      const fresh = (rec.webinars || []).length <= 1;
       const linked = focus && p.email === focus.email;
       return '<div class="om-person ' + (linked ? 'linked' : (focus ? 'faded' : '')) +
         (p.attended ? '' : ' wb-missed') + '" ' +
@@ -1139,7 +1421,8 @@ function viewWebinarsMap() {
         (p.attended ? ' - attended' : ' - registered but did not attend') +
         (n > 1 ? ', ' + n + ' webinars attended' : '') + '">' +
         leadAvatar(p.name || p.email) +
-        '<div class="om-txt"><b>' + esc(p.name || p.email) + '</b>' +
+        '<div class="om-txt"><b>' + esc(p.name || p.email) +
+          (fresh ? ' <span class="wb-new">NEW</span>' : '') + '</b>' +
           '<span>' + (p.attended
             ? '<span class="wb-tag yes">attended</span>' +
               (p.minutes ? ' ' + p.minutes + ' min' : '')
@@ -2433,6 +2716,9 @@ document.addEventListener('click', e => {
     case 'wb-stats': wbLoadAllStats(); return;
     case 'wb-stats-stop': wbStatsStop = true; return;
     case 'wb-view': setWebinarsView(t.dataset.v); render(); return;
+    case 'wb-f-clear':
+      wbF = { topic: 'all', city: 'all', source: 'all', status: 'all', seen: 'all' };
+      wbBrand = 'all'; render(); return;
     case 'wb-see-all': setWebinarsView('list'); wbBrand = t.dataset.v; render(); return;
     case 'wb-brand-filter': wbBrand = t.dataset.v; render(); return;
     case 'wb-when': wbWhen = t.dataset.v; render(); return;
@@ -2621,6 +2907,7 @@ document.addEventListener('change', e => {
   const el = e.target;
   if (el.dataset && el.dataset.sort === 'tasks') { setTaskSort(el.value); render(); return; }
   if (el.dataset && el.dataset.sort === 'leads') { setLeadSort(el.value); render(); return; }
+  if (el.dataset && el.dataset.wbf) { wbF[el.dataset.wbf] = el.value; render(); return; }
   if (!el.dataset || !draft) return;
   if (el.dataset.fb === 'pipelineId') {
     harvestDraft();
@@ -2663,6 +2950,7 @@ function render() {
     case 'webinars':
       if (parts[1]) viewWebinarTopic(decodeURIComponent(parts[1]));
       else if (webinarsView() === 'list') viewWebinars();
+      else if (webinarsView() === 'analytics') viewWebinarsAnalytics();
       else viewWebinarsMap();
       break;
     case 'pipelines': viewPipelines(); break;

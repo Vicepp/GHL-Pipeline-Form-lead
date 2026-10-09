@@ -102,6 +102,43 @@ function groupTopics(conferences, overrides, now) {
   }).sort((a, b) => new Date(b.last || 0) - new Date(a.last || 0));
 }
 
+/* Where a registrant says they came from. The forms ask "How did you hear
+   about the webinar?", but plenty leave it blank - so fall back to the
+   referrer, which recovers Instagram, LinkedIn and Gmail traffic that would
+   otherwise all read as Unknown. */
+const SOURCE_CANON = [
+  [/linked\s*in/i, 'LinkedIn'], [/you\s*tube/i, 'YouTube'], [/face\s*book/i, 'Facebook'],
+  [/insta/i, 'Instagram'], [/whats\s*app/i, 'WhatsApp'], [/tik\s*tok/i, 'TikTok'],
+  [/^e-?mail/i, 'Email'], [/news\s*letter/i, 'Email'], [/web\s*site/i, 'Website'],
+  [/google/i, 'Google'], [/twitter|^x$/i, 'X'], [/friend|word of mouth|referr/i, 'Referral'],
+  [/podcast/i, 'Podcast'], [/event|conference/i, 'Event']
+];
+const REFERER_CANON = [
+  [/instagram/i, 'Instagram'], [/linkedin/i, 'LinkedIn'], [/facebook|fb\.me/i, 'Facebook'],
+  [/youtube|youtu\.be/i, 'YouTube'], [/android\.gm|mail\.google|outlook|mail\./i, 'Email'],
+  [/whatsapp/i, 'WhatsApp'], [/tiktok/i, 'TikTok'], [/t\.co|twitter|x\.com/i, 'X'],
+  [/google\./i, 'Google'], [/clickmeeting/i, 'Direct']
+];
+function canon(value, table) {
+  const v = String(value == null ? '' : value).trim();
+  if (!v) return '';
+  for (const row of table) if (row[0].test(v)) return row[1];
+  return v;
+}
+function sourceOf(r) {
+  const f = (r && r.fields) || {};
+  const key = Object.keys(f).find(k => /hear about|how did you|source|referr|find us/i.test(k));
+  const answered = key ? canon(f[key], SOURCE_CANON) : '';
+  if (answered) return answered;
+  const ref = r && r.http_referer;
+  if (ref) {
+    const fromRef = canon(ref, REFERER_CANON);
+    if (fromRef && fromRef !== ref) return fromRef;
+    try { return new URL(ref).hostname.replace(/^www\./, ''); } catch (e) { /* android-app:// etc */ }
+  }
+  return 'Unknown';
+}
+
 /** registrations + attendees for one run -> who showed up and who did not */
 function reconcile(registrations, attendees) {
   const norm = (e) => lower(e).trim();
@@ -135,6 +172,8 @@ function reconcile(registrations, attendees) {
       minutes: a ? a.minutes : 0,
       city: (a && a.city) || (r.geo && r.geo.city) || '',
       country: (a && a.country) || (r.geo && r.geo.country) || '',
+      source: sourceOf(r),
+      referer: r.http_referer || '',
       fields: r.fields || {}
     });
   });
@@ -144,7 +183,7 @@ function reconcile(registrations, attendees) {
     people.push({
       email: k, name: came[k].name || k, registeredAt: null, attended: true,
       minutes: came[k].minutes, city: came[k].city, country: came[k].country,
-      fields: {}, walkIn: true
+      source: 'Walk-in', referer: '', fields: {}, walkIn: true
     });
   });
 
@@ -164,4 +203,5 @@ function reconcile(registrations, attendees) {
   };
 }
 
-module.exports = { brandOf, topicKeyOf, groupTopics, reconcile, isUpcoming, MXL_TERMS, PHX_TERMS };
+module.exports = { brandOf, topicKeyOf, groupTopics, reconcile, isUpcoming, sourceOf, canon,
+  MXL_TERMS, PHX_TERMS };

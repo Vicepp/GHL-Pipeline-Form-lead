@@ -662,3 +662,22 @@ body{
 .to-top.on{opacity:1;pointer-events:auto;transform:none}
 .to-top:hover{filter:brightness(1.15)}
 @media(max-width:620px){.to-top{right:14px;bottom:14px;width:40px;height:40px}}
+
+/* ---------- webinar analytics ---------- */
+.wb-filters{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+.wb-f{display:flex;flex-direction:column;gap:4px;min-width:0}
+.wb-f>span{font-size:11px;font-weight:650;color:var(--text-2);text-transform:uppercase;letter-spacing:.05em}
+.wb-f .sort-sel{max-width:230px}
+.wb-bars{display:flex;flex-direction:column;gap:12px}
+.wb-bl{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;margin-bottom:5px}
+.wb-bl span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wb-bl b{white-space:nowrap;font-variant-numeric:tabular-nums}
+.wb-bl b i{font-style:normal;font-weight:600;color:var(--text-3);margin-left:7px;font-size:11.5px}
+.wb-track{position:relative;height:9px;border-radius:99px;background:rgba(16,24,40,.06);overflow:hidden}
+.wb-track>span{display:block;height:100%;border-radius:99px}
+.wb-track.dual>span{position:absolute;left:0;top:0}
+.wb-track.dual>span.over{height:100%;border-radius:99px}
+.wb-new{
+  display:inline-block;font-size:9.5px;font-weight:800;letter-spacing:.06em;
+  background:var(--gold);color:#17203a;border-radius:99px;padding:1px 6px;vertical-align:1px
+}
