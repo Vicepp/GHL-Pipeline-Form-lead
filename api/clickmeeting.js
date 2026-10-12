@@ -33,7 +33,9 @@ function send(res, status, obj) {
   res.status(status).send(JSON.stringify(obj));
 }
 
-/** the signed-in person, proved by their Firebase ID token */
+/** the signed-in person, proved by their Firebase ID token.
+    Returns the token too: reading their own /team row has to be done AS
+    them, or firestore.rules refuses it. */
 async function callerEmail(req) {
   const auth = req.headers.authorization || '';
   const m = auth.match(/^Bearer\s+(.+)$/i);
@@ -51,22 +53,28 @@ async function callerEmail(req) {
   if (!r.ok || !email) {
     throw Object.assign(new Error('Your session has expired - reload and sign in again.'), { status: 401 });
   }
-  return String(email).toLowerCase();
+  return { email: String(email).toLowerCase(), idToken: m[1].trim() };
 }
 
 /** on the team, or the bootstrap owner */
-async function assertTeam(email) {
+async function assertTeam(email, idToken) {
   const pid = process.env.FIREBASE_PROJECT_ID;
   if (!pid) throw Object.assign(new Error('FIREBASE_PROJECT_ID is not set.'), { status: 500 });
   const owners = String(process.env.OWNER_EMAILS || 'info@phcinvest.com')
     .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
   if (owners.indexOf(email) >= 0) return;
+
+  /* The rule on /team requires request.auth, so this read has to carry the
+     caller's ID token. Sending only the API key makes it an anonymous
+     request, which is refused - and every team member except a hardcoded
+     owner was being told they were not on the team. */
   const url = 'https://firestore.googleapis.com/v1/projects/' + pid +
-    '/databases/(default)/documents/team/' + encodeURIComponent(email) +
-    '?key=' + process.env.FIREBASE_API_KEY;
-  const r = await fetch(url);
+    '/databases/(default)/documents/team/' + encodeURIComponent(email);
+  const r = await fetch(url, { headers: { Authorization: 'Bearer ' + idToken } });
   if (r.status === 200) return;
-  throw Object.assign(new Error(email + ' is not on the team list.'), { status: 403 });
+  throw Object.assign(new Error(
+    email + ' is not on the team list yet. An admin can add it under Settings - Team.'
+  ), { status: 403 });
 }
 
 async function cm(path) {
@@ -127,8 +135,8 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const email = await callerEmail(req);
-    await assertTeam(email);
+    const who = await callerEmail(req);
+    await assertTeam(who.email, who.idToken);
 
     if (q.action === 'list') {
       const [active, inactive] = await Promise.all([

@@ -2498,17 +2498,6 @@ function viewSettings() {
           d.contacts.length + ' contacts &middot; ' + d.opportunities.length + ' opportunities &middot; ' +
           d.tasks.length + ' tasks &middot; ' + d.forms.length + ' forms &middot; ' + d.pipelines.length + ' pipelines</div>' +
       '</div></div>' +
-      '<div class="card" style="margin-top:16px"><div class="card-h"><h3>GoHighLevel</h3><div class="spacer"></div>' +
-        '<span class="pill gold">inbound only</span></div>' +
-        '<div class="card-b tiny muted"><p style="margin-top:0">GHL forms post their submissions to ' +
-        '<code>/api/ghl-inbound</code> and the lead appears on the board here. <b>No GHL pipeline or stage is ' +
-        'involved</b> &mdash; the only thing needed in GHL is a workflow with a <i>Form Submitted</i> trigger and a ' +
-        '<i>Webhook</i> action. Nothing here reads or moves GHL opportunities.</p>' +
-        '<p>To connect one: make a form here with its <b>Source</b> set to <i>In GoHighLevel</i>, then ' +
-        '<b>Forms &rarr; Webhook</b> gives you the URL to paste into the GHL workflow.</p>' +
-        '<p>Needs four environment variables on the host (<code>INBOUND_SECRET</code> and three ' +
-        '<code>FIREBASE_*</code> values) &mdash; see START-HERE.md. No GHL API token is needed for this direction.</p>' +
-        '</div></div>' +
     '</div></div>');
 }
 
