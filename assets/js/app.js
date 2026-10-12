@@ -2471,34 +2471,23 @@ function viewSettings() {
           '<b>First time here?</b> on the sign-in page to set their own password.</div></td></tr>') +
       '</tbody></table></div></div>';
 
-  shell('settings', title('Settings', 'Branding, team and your data.'),
+  shell('settings', title('Settings', 'Branding and team.'),
     '<div class="two" style="grid-template-columns:1fr 1fr"><div>' +
-      '<div class="card"><div class="card-h"><h3>Workspace</h3></div><div class="card-b">' +
+      '<div class="card"><div class="card-h"><h3>Workspace</h3><div class="spacer"></div>' +
+        (liveMode() ? '<span class="pill ok"><span class="dot"></span>Firestore</span>'
+                    : '<span class="pill warn">This browser only</span>') +
+      '</div><div class="card-b">' +
         '<label class="f"><span>Company name</span><input class="inp" id="orgName" value="' + esc(d.org.name) + '"></label>' +
         '<label class="f"><span>Sub-label</span><input class="inp" id="orgTag" value="' + esc(d.org.tagline) + '"></label>' +
         '<label class="f"><span>Assignable people (comma separated)</span>' +
           '<input class="inp" id="orgOwners" value="' + esc((d.org.owners || []).join(', ')) + '"></label>' +
-        '<button class="btn btn-gold" data-act="save-org">Save</button></div></div>' +
-      teamCard +
-    '</div><div>' +
-      '<div class="card"><div class="card-h"><h3>Data</h3><div class="spacer"></div>' +
-        (liveMode() ? '<span class="pill ok"><span class="dot"></span>Firestore</span>' : '<span class="pill warn">This browser only</span>') +
-      '</div><div class="card-b">' +
-        '<p class="tiny muted" style="margin-top:0">' + (liveMode()
-          ? 'Live in Cloud Firestore. Every team member sees the same boards in real time, and public form submissions land here instantly.'
-          : 'Saved in this browser only (localStorage). Fill in <code>assets/js/config.js</code> to go live.') + '</p>' +
-        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-          '<button class="btn" data-act="link-owners">Link tasks to logins</button>' +
-          '<button class="btn" data-act="export">Export JSON</button>' +
-          '<button class="btn" data-act="import">Import JSON</button>' +
-          (liveMode() ? '<button class="btn" data-act="seed">Load demo pipelines</button>' : '') +
-          '<button class="btn btn-danger" data-act="wipe">Clear leads &amp; tasks</button>' +
-          '<button class="btn btn-danger" data-act="reset">Reset everything</button>' +
-        '</div><div class="tiny muted" style="margin-top:12px">' +
+        '<button class="btn btn-gold" data-act="save-org">Save</button>' +
+        '<div class="tiny muted" style="margin-top:14px">' +
           d.contacts.length + ' contacts &middot; ' + d.opportunities.length + ' opportunities &middot; ' +
-          d.tasks.length + ' tasks &middot; ' + d.forms.length + ' forms &middot; ' + d.pipelines.length + ' pipelines</div>' +
+          d.tasks.length + ' tasks &middot; ' + d.forms.length + ' forms &middot; ' +
+          d.pipelines.length + ' pipelines</div>' +
       '</div></div>' +
-    '</div></div>');
+    '</div><div>' + teamCard + '</div></div>');
 }
 
 /* ---------------------------------------------------------- public form */
@@ -3056,7 +3045,7 @@ document.addEventListener('click', e => {
       return;
     }
 
-    /* settings + data */
+    /* settings */
     case 'save-org': {
       const org = {
         name: document.getElementById('orgName').value.trim() || 'Pheenyx Capital',
@@ -3065,41 +3054,6 @@ document.addEventListener('click', e => {
       };
       go(S.saveOrg(org), 'Saved'); return;
     }
-    case 'link-owners': {
-      const loose = S.db().tasks.filter(x => !x.ownerEmail && x.owner).length;
-      if (!loose) { toast('Every assigned task is already linked to a login.', 'ok'); return; }
-      go(S.linkTaskOwners().then(n => {
-        toast(n ? 'Linked ' + n + ' of ' + loose + ' task' + (loose === 1 ? '' : 's') + ' to a login'
-                : 'No owner names matched a team member - check the names in Settings - Team',
-          n ? 'ok' : 'bad');
-      }));
-      return;
-    }
-    case 'export': {
-      const blob = new Blob([S.exportJson()], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = 'pheenyx-pipeline-' + new Date().toISOString().slice(0, 10) + '.json';
-      a.click(); URL.revokeObjectURL(a.href); toast('Exported', 'ok'); return;
-    }
-    case 'import':
-      openModal({
-        title: 'Import backup',
-        body: '<label class="f"><span>Paste the JSON you exported</span><textarea class="inp" name="json" style="min-height:180px"></textarea></label>' +
-          (liveMode() ? '<div class="tiny muted">This replaces everything in the live database.</div>' : ''),
-        footer: '<button class="btn" data-act="modal-close">Cancel</button><button class="btn btn-gold" data-act="import-go">Import</button>'
-      });
-      return;
-    case 'import-go': { const txt = mVal('json'); closeModal(); go(S.importJson(txt), 'Imported'); return; }
-    case 'seed':
-      if (!confirm('Load the demo pipelines and forms? This replaces what is in the database now.')) return;
-      go(S.seedRemote(), 'Demo data loaded'); return;
-    case 'wipe':
-      if (!confirm('Clear all contacts, opportunities and tasks? Forms and pipelines stay.')) return;
-      go(S.wipeRecords(), 'Cleared'); return;
-    case 'reset':
-      if (!confirm('Reset everything back to the demo data?')) return;
-      go(S.resetAll(), 'Reset'); return;
     case 'copy': {
       const el = document.getElementById(t.dataset.target);
       el.select(); el.setSelectionRange(0, 99999);

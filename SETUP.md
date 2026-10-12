@@ -83,7 +83,7 @@ node tools/provision-team.js
 It creates each Firebase Auth account, writes the `/team` allow-list rows the rules check, adds everyone to the app's assignable-people list, and prints the handout table. Safe to re-run — existing accounts get their password reset to the file's value instead of erroring. Check first with `node tools/provision-team.js --dry-run`.
 
 3. Send each person **only their own row** from the table. They sign in directly — they do *not* need "First time here?". Ask them to change their password via **Forgot password** on the sign-in page.
-4. You'll land on an empty dashboard — a fresh database has no pipelines. **Settings → Load demo pipelines** puts the three pipelines and two forms in so you can see it working, then rename or delete freely. (Or build your own: Pipelines → + New pipeline.)
+4. You'll land on an empty dashboard — a fresh database has no pipelines. Build the first one under **Pipelines → + New pipeline**, then point a form at it under **Forms → + New form**.
 
 **Later changes:** add or remove people under **Settings → Team**. Someone added there sets their own password via **First time here?**. Removing someone cuts off their data access immediately, even if their password still works. No reset or import can wipe the team list — that's enforced in `store.js`, so you can't accidentally lock everyone out.
 
@@ -137,7 +137,7 @@ Free tier (Firebase "Spark") covers this comfortably: 50k document reads and 20k
 | *"Email/password sign-in is not enabled"* | Step 2, Authentication |
 | Sign-in fails only on the live URL | Vercel domain not in Firebase → Auth → Settings → Authorized domains |
 | Signed in but "Not on the team yet" | Your email isn't in `team` and isn't line 30 of `firestore.rules` |
-| Dashboard empty on a new project | Normal — Settings → Load demo pipelines, or create your own |
+| Dashboard empty on a new project | Normal — create one under Pipelines → + New pipeline |
 | Form says "could not send" | Rules not published (Step 3), or the form is paused |
 
 ---

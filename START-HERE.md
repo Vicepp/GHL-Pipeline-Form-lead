@@ -82,7 +82,7 @@ Want to see what it will do first: `node tools/provision-team.js --dry-run`
 > With `config.js` filled in, reload <http://localhost:8080/>
 > - sidebar badge says **"Live database"**, not "Local demo data"
 > - you get a **Sign in** screen → sign in as `info@phcinvest.com`
-> - dashboard is empty (normal, new database) → **Settings → Load demo pipelines**
+> - dashboard is empty (normal, new database) → **Pipelines → + New pipeline**
 > - **Dashboard → Open a form as a lead** → fill it → the person appears on the board and in Pending tasks
 > - open the same URL in a private window, sign in as someone else → same data
 >
