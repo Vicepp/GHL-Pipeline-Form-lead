@@ -793,3 +793,16 @@ body{
 .em-subj{max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .em-toolbar{padding:12px 16px 4px}
 @media(max-width:760px){.em-hrow{grid-template-columns:28px repeat(24,minmax(11px,1fr))}.em-cell{font-size:0}}
+
+/* email: click quality */
+.em-cq{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.em-cq>div{background:rgba(16,24,40,.035);border-radius:12px;padding:12px 14px}
+.em-cq>div.ok{background:var(--ok-bg)}
+.em-cq>div.bad{background:var(--warn-bg)}
+.em-cq b{display:block;font-size:22px;letter-spacing:-.02em;color:var(--navy)}
+.em-cq span{font-size:12px;color:var(--text-2)}
+.em-h4{font-size:13px;margin-bottom:10px}
+.em-stack{display:flex;gap:2px}
+.em-stack>span{border-radius:99px}
+.em-cq-two{gap:0;border-top:1px solid rgba(16,24,40,.06);border-bottom:1px solid rgba(16,24,40,.06)}
+@media(max-width:900px){.em-cq{grid-template-columns:repeat(2,1fr)}}

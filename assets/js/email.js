@@ -199,7 +199,8 @@ function emAggregate(sel) {
     sendN: Array.from({ length: 7 }, () => new Array(24).fill(0)),       /* sends per slot */
     sendO: Array.from({ length: 7 }, () => new Array(24).fill(0)),       /* opens from those sends */
     sendC: Array.from({ length: 7 }, () => new Array(24).fill(0)),
-    lag: [0, 0, 0, 0, 0, 0], days: new Map(), camps: new Map(), people: new Map()
+    lag: [0, 0, 0, 0, 0, 0], days: new Map(), camps: new Map(), people: new Map(),
+    clickIdx: []          /* every recorded click, scanner or not - for the Click quality tab */
   };
   for (const i of sel.idx) {
     const ci = E.ci[i], ki = E.ki[i];
@@ -207,6 +208,7 @@ function emAggregate(sel) {
     a.contacts.add(ci);
     if (E.st[i] === C_F) a.failed++;
     if (E.bot[i]) a.botClicks++;
+    if (E.st[i] === C_C) a.clickIdx.push(i);
     if (o) { a.opened++; a.openers.add(ci); }
     if (c) { a.clicks++; a.clickers.add(ci); }
     a.sendN[E.dow[i]][E.hour[i]]++;
@@ -445,7 +447,7 @@ function viewEmailCampaigns() {
       foot: a.openers.size.toLocaleString() + ' people opened at least one' }) +
     tile({ tone: 'pink', icon: '&#10138;', label: 'Clicked a link', value: a.clicks.toLocaleString(),
       delta: { dir: clickRate >= 2 ? 'up' : clickRate >= 1 ? '' : 'down', text: clickRate + '%' },
-      foot: a.clickers.size.toLocaleString() + ' people' + (emF.bots ? ' (scanner clicks included)' : ' &middot; ' + a.botClicks.toLocaleString() + ' scanner clicks left out') }) +
+      foot: a.clickers.size.toLocaleString() + ' people' + (emF.bots ? ' (scanner clicks included)' : ' &middot; <a href="#" data-act="em-tab" data-v="clicks">' + a.botClicks.toLocaleString() + ' scanner clicks left out</a>') }) +
     tile({ tone: 'cream', icon: '&#9733;', label: 'Newly opened', value: newOpeners.toLocaleString(),
       delta: a.openers.size ? { text: Math.round(newOpeners / a.openers.size * 100) + '% of openers' } : null,
       foot: 'opened for the first time ever in this range' }) +
@@ -575,9 +577,10 @@ function viewEmailCampaigns() {
   const tab = (v, l, n) => '<button class="seg-btn ' + (emPeopleView === v ? 'on' : '') + '" data-act="em-tab" data-v="' + v + '">' + l +
     ' <b>' + n.toLocaleString() + '</b></button>';
   const listCard = '<div class="card" style="margin-top:16px"><div class="card-h"><div class="seg">' +
-    tab('campaigns', 'Campaigns', campRows.length) + tab('contacts', 'Contacts', people.length) + tab('emails', 'Every email', evs.length) +
+    tab('campaigns', 'Campaigns', campRows.length) + tab('contacts', 'Contacts', people.length) + tab('emails', 'Every email', evs.length) + tab('clicks', 'Click quality', a.clickIdx.length) +
     '</div><div class="spacer"></div><span class="tiny muted">' + esc(emDayLabel(r.from)) + ' &ndash; ' + esc(emDayLabel(r.to)) + '</span></div>' +
-    (emPeopleView === 'campaigns' ? campCard : emPeopleView === 'emails' ? emailCard : contactCard) + '</div>';
+    (emPeopleView === 'campaigns' ? campCard : emPeopleView === 'emails' ? emailCard :
+      emPeopleView === 'clicks' ? emClickQuality(a) : contactCard) + '</div>';
 
   const y = window.scrollY;
   shell('email', head,
@@ -603,6 +606,116 @@ function emStatusPill(E, i) {
   if (s === C_D) return '<span class="pill">delivered</span>';
   if (s === C_S) return '<span class="pill">sent</span>';
   return '<span class="pill">' + esc(String.fromCharCode(s)) + '</span>';
+}
+
+/* ------------------------------------------------------------ click quality
+   The evidence behind every "scanner" flag, so a person can judge it.
+   A click is flagged when it came within 2 minutes of sending (no person
+   opens, reads and clicks that fast across thousands of emails), or when
+   the address clicks 80%+ of the 5+ emails it received (a link scanner
+   follows every link; people do not).                                    */
+const EM_FREE = /^(gmail|googlemail|yahoo|ymail|rocketmail|hotmail|outlook|live|msn|icloud|me|mac|aol|comcast|att|sbcglobal|verizon|bellsouth|cox|charter|protonmail|proton|gmx|mail|zoho|yandex)\./;
+const EM_GOLD = '#b8860b';
+function emClickReason(E, i) {
+  if (!E.bot[i]) return '';
+  return E.dl[i] >= 0 && E.dl[i] <= 120 ? 'instant' : 'serial';
+}
+function emClickQuality(a) {
+  const D = emData, E = D.E, ix = a.clickIdx;
+  if (!ix.length) return '<div class="empty">No clicks in this selection.</div>';
+  let real = 0, instant = 0, serial = 0;
+  const SPEED = ['Under 10 seconds', '10-30 seconds', '30 sec - 2 min', '2-10 minutes', '10-60 minutes', '1-24 hours', 'Over a day'];
+  const speedBot = SPEED.map(() => 0), speedReal = SPEED.map(() => 0);
+  const kind = { personal: { n: 0, b: 0 }, work: { n: 0, b: 0 } };
+  const dom = new Map(), who = new Map();
+  /* each contact's click habit over everything they were ever sent, not just this filter */
+  const habit = new Map();
+  for (let i = 0; i < E.n; i++) {
+    const h = habit.get(E.ci[i]) || { n: 0, c: 0 };
+    h.n++; if (E.st[i] === C_C) h.c++;
+    habit.set(E.ci[i], h);
+  }
+  ix.forEach(i => {
+    const r = emClickReason(E, i);
+    if (!r) real++; else if (r === 'instant') instant++; else serial++;
+    const s = E.dl[i];
+    const b = s < 0 ? 6 : s < 10 ? 0 : s < 30 ? 1 : s <= 120 ? 2 : s < 600 ? 3 : s < 3600 ? 4 : s < 86400 ? 5 : 6;
+    if (r) speedBot[b]++; else speedReal[b]++;
+    const c = D.conts[E.ci[i]];
+    const d = (c.email.split('@')[1] || 'unknown').toLowerCase();
+    const k = EM_FREE.test(d) ? 'personal' : 'work';
+    kind[k].n++; if (r) kind[k].b++;
+    const dd = dom.get(d) || { d, k, n: 0, b: 0, people: new Set() };
+    dd.n++; if (r) dd.b++; dd.people.add(E.ci[i]); dom.set(d, dd);
+    if (r) {
+      const w = who.get(E.ci[i]) || { ci: E.ci[i], n: 0, instant: 0, secs: [] };
+      w.n++; if (r === 'instant') w.instant++; if (s >= 0) w.secs.push(s);
+      who.set(E.ci[i], w);
+    }
+  });
+  const total = ix.length, bots = instant + serial;
+  const share = (x) => Math.round(x / total * 100) + '%';
+
+  const head = '<div class="card-b"><div class="em-cq">' +
+    '<div><b>' + total.toLocaleString() + '</b><span>clicks recorded by GoHighLevel</span></div>' +
+    '<div class="ok"><b>' + real.toLocaleString() + '</b><span>look genuine (' + share(real) + ')</span></div>' +
+    '<div class="bad"><b>' + bots.toLocaleString() + '</b><span>scanner clicks (' + share(bots) + ')</span></div>' +
+    '<div><b>' + instant.toLocaleString() + '</b><span>came within 2 min of sending</span></div>' +
+    '<div><b>' + serial.toLocaleString() + '</b><span>from addresses that click 80%+ of emails</span></div>' +
+    '</div><div class="tiny muted" style="margin-top:10px">Work, hospital and university mail servers run link scanners (Mimecast, Proofpoint, ' +
+    'Microsoft Defender) that open each email and follow every link the moment it arrives, before a person sees it. GoHighLevel records ' +
+    'those as clicks. A person rarely clicks within seconds, and nobody clicks every single email - those are the two tests used here.</div></div>';
+
+  const smax = Math.max(1, ...SPEED.map((_, j) => speedBot[j] + speedReal[j]));
+  const speedCard = '<div class="card-b"><h4 class="em-h4">How soon after sending the click came</h4>' +
+    '<div class="st-legend" style="margin-bottom:8px"><span><i style="background:' + EM_GREEN + '"></i>Looks genuine</span>' +
+    '<span><i style="background:' + EM_GOLD + '"></i>Scanner</span></div><div class="wb-bars">' +
+    SPEED.map((l, b) => {
+      const n = speedBot[b] + speedReal[b];
+      if (!n) return '';
+      return '<div class="wb-bar"><div class="wb-bl"><span>' + l + '</span><b>' + n.toLocaleString() +
+        '<i>' + speedReal[b] + ' genuine &middot; ' + speedBot[b] + ' scanner</i></b></div>' +
+        '<div class="wb-track em-stack"><span style="width:' + (speedReal[b] / smax * 100).toFixed(1) + '%;background:' + EM_GREEN + '"></span>' +
+        '<span style="width:' + (speedBot[b] / smax * 100).toFixed(1) + '%;background:' + EM_GOLD + '"></span></div></div>';
+    }).join('') + '</div><div class="tiny muted" style="margin-top:6px">Measured from send to the latest click GoHighLevel kept for that email.</div></div>';
+
+  const kindCard = '<div class="card-b"><h4 class="em-h4">Personal inboxes vs work addresses</h4><div class="wb-bars">' +
+    [['personal', 'Personal (Gmail, Yahoo, Outlook...)'], ['work', 'Work / hospital / university']].map(kv => {
+      const k = kind[kv[0]], p = pct(k.b, k.n);
+      return '<div class="wb-bar"><div class="wb-bl"><span>' + kv[1] + '</span><b>' + p + '% scanner<i>' +
+        k.b + ' of ' + k.n + ' clicks</i></b></div><div class="wb-track"><span style="width:' + p + '%;background:' + EM_GOLD + '"></span></div></div>';
+    }).join('') +
+    '</div><div class="tiny muted" style="margin-top:6px">The check on the flags: scanners sit on company mail servers, not on Gmail - ' +
+    'so if the flags were wrong, these two rows would look alike.</div></div>';
+
+  const doms = [...dom.values()].filter(x => x.n >= 3).sort((x, y) => y.b - x.b || y.n - x.n).slice(0, 25);
+  const domCard = '<div class="card-b"><h4 class="em-h4">Email domains behind the clicks</h4>' +
+    '<div class="tiny muted">Domains with 3+ clicks, most scanner clicks first.</div></div><div class="scroll-x"><table class="tbl"><thead><tr>' +
+    '<th>Domain</th><th>Type</th><th>People</th><th>Clicks</th><th>Scanner</th><th>Genuine</th></tr></thead><tbody>' +
+    doms.map(x => '<tr><td class="n">' + esc(x.d) + '</td><td class="tiny muted">' + x.k + '</td><td>' + x.people.size + '</td><td>' + x.n +
+      '</td><td>' + (x.b ? '<span class="pill warn">' + x.b + ' &middot; ' + Math.round(x.b / x.n * 100) + '%</span>' : '<span class="tiny muted">0</span>') +
+      '</td><td>' + (x.n - x.b ? '<span class="pill ok">' + (x.n - x.b) + '</span>' : '<span class="tiny muted">0</span>') + '</td></tr>').join('') +
+    '</tbody></table></div>';
+
+  const med = (arr) => { if (!arr.length) return -1; const s = arr.slice().sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  const ws = [...who.values()].sort((x, y) => y.n - x.n);
+  const whoCard = '<div class="card-b"><h4 class="em-h4">Contacts whose clicks were flagged</h4>' +
+    '<div class="tiny muted">Click a name to see every email they were sent. Their opens still count; only the flagged clicks are set aside.</div></div>' +
+    '<div class="scroll-x"><table class="tbl"><thead><tr><th>Contact</th><th>Emails received</th><th>Clicked (all time)</th>' +
+    '<th>Flagged clicks</th><th>Typical time to click</th><th>Why flagged</th></tr></thead><tbody>' +
+    ws.slice(0, emShow).map(w => {
+      const c = D.conts[w.ci], h = habit.get(w.ci), m = med(w.secs);
+      const why = [];
+      if (w.instant) why.push(w.instant + ' within 2 min of sending');
+      if (h.n >= 5 && h.c / h.n >= 0.8) why.push('clicks ' + Math.round(h.c / h.n * 100) + '% of emails');
+      return '<tr><td><a href="#" class="n" data-act="em-person" data-v="' + w.ci + '">' + esc(c.name || c.email) + '</a>' +
+        '<div class="tiny muted">' + esc(c.email) + '</div></td><td>' + h.n + '</td><td>' + h.c + ' <span class="tiny muted">' +
+        Math.round(h.c / h.n * 100) + '%</span></td><td>' + w.n + '</td><td class="tiny">' +
+        (m < 0 ? '-' : m < 60 ? m + ' seconds' : emLag(m)) + '</td><td class="tiny">' + esc(why.join(' · ')) + '</td></tr>';
+    }).join('') + '</tbody></table></div>' +
+    (ws.length > emShow ? '<div class="card-b"><button class="btn btn-sm" data-act="em-more">Show more (' + (ws.length - emShow) + ' left)</button></div>' : '');
+
+  return head + '<div class="two em-cq-two"><div>' + speedCard + '</div><div>' + kindCard + '</div></div>' + domCard + whoCard;
 }
 
 /** everything one contact has been sent, newest first */
