@@ -122,7 +122,28 @@ const body = [
   ''
 ].join('\n');
 
-fs.writeFileSync(ENV, body, 'utf8');
+/* Anything already in .env.local that this script does not write itself is
+   carried over verbatim. Without this, re-running it to fill in the service
+   account silently deleted CLICKMEETING_API_KEY, GHL_API_TOKEN and
+   GHL_LOCATION_ID - secrets that are not recoverable from any file here. */
+const WRITTEN = body.split('\n')
+  .map(l => (l.match(/^([A-Z_]+)=/) || [])[1])
+  .filter(Boolean);
+const carried = Object.keys(existing)
+  .filter(k => WRITTEN.indexOf(k) < 0)
+  .map(k => k + '=' + existing[k]);
+
+fs.writeFileSync(ENV, body + (carried.length
+  ? '\n# ---------------------------------------------------------------------\n' +
+    '# Carried over from the previous .env.local - this script did not\n' +
+    '# generate them, so it must not drop them either.\n' +
+    '# ---------------------------------------------------------------------\n' +
+    carried.join('\n') + '\n'
+  : ''), 'utf8');
+if (carried.length) {
+  console.log('\n  kept ' + carried.length + ' other variable' + (carried.length === 1 ? '' : 's') +
+    ': ' + carried.map(l => l.split('=')[0]).join(', '));
+}
 
 const simpleReady = !!(secret && projectId && web.apiKey);
 const done = !!(simpleReady && clientEmail && privateKey);
