@@ -52,6 +52,17 @@ One submission always creates three things:
 - **Contacts** — search, and a panel per person: answers, pipeline/stage, quick stage move, tasks.
 - **Settings** — company name, assignable people, team access (add a member → they set their own password), export/import, seed/reset.
 
+## Email Campaigns page
+
+`#/email` analyses every campaign and bulk email sent from GoHighLevel: who it went to, who opened, who clicked, when they engage, and the best time to send. The page reads `emailAnalytics` in Firestore (team read-only); the data is put there by a script you run on a computer with the GHL token:
+
+```
+node tools/ghl-email-sync.js            first run pulls the whole history; later runs only fetch what's new
+node tools/ghl-email-sync.js --upload   republish what is already cached
+```
+
+Needs `GHL_API_TOKEN` + `GHL_LOCATION_ID` in `.env.local` and `tools/service-account.json`. GHL only reports each email's *latest* status, so it costs one API call per email; a full history can exceed GHL's ~200k calls/day, in which case the script publishes what it has, waits for the allowance to reset, and carries on. Its cache lives in `tools/.ghl-cache/` (gitignored - it holds contact emails).
+
 ## Security model
 
 `firestore.rules` is the whole of it:

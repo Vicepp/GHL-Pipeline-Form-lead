@@ -1,7 +1,7 @@
 /* Pheenyx Capital - Pipeline Workflow
    app.js : routing, views, interactions.  Started by boot.js.
 
-   Routes: #/dashboard #/pipelines #/pipeline/<id> #/forms #/forms/<id|new>
+   Routes: #/dashboard #/email #/pipelines #/pipeline/<id> #/forms #/forms/<id|new>
            #/contacts #/settings        (all require a signed-in team member)
            #/f/<formId>                 (public form - no login, ever)        */
 
@@ -184,6 +184,7 @@ const NAV = [
   { r: 'dashboard', label: 'Dashboard', ic: '▦' },
   { r: 'analytics', label: 'Analytics', ic: '◔' },
   { r: 'webinars', label: 'Webinars', ic: '▶' },
+  { r: 'email', label: 'Email Campaigns', ic: '✉' },
   { r: 'pipelines', label: 'Pipelines', ic: '⌸' },
   { r: 'forms', label: 'Forms', ic: '☰' },
   { r: 'contacts', label: 'Contacts', ic: '☺' },
@@ -3117,6 +3118,7 @@ function render() {
       else if (webinarsView() === 'analytics') viewWebinarsAnalytics();
       else viewWebinarsMap();
       break;
+    case 'email': viewEmailCampaigns(); break;
     case 'pipelines': viewPipelines(); break;
     case 'pipeline': viewBoard(parts[1]); break;
     case 'forms':
@@ -3129,7 +3131,7 @@ function render() {
     case 'settings': viewSettings(); break;
     default: location.hash = '#/dashboard';
   }
-  window.scrollTo(0, 0);
+  if (!(parts[0] === 'email' && typeof emKeepScroll !== 'undefined' && emKeepScroll)) window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', () => {
   closeModal();

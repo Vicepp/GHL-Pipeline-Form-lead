@@ -17,3 +17,6 @@ tools/team.json
 TEAM-PASSWORDS.md
 .env
 .env.local
+
+# GHL email sync cache - holds contact emails
+tools/.ghl-cache/

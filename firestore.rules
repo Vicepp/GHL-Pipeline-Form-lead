@@ -124,6 +124,14 @@ service cloud.firestore {
       );
     }
 
+    /* ---- email analytics: written only by tools/ghl-email-sync.js --- */
+    /* the sync uses the service account, which bypasses rules - so the
+       team may read it and nobody may write it from a browser */
+    match /emailAnalytics/{id} {
+      allow read: if isTeam();
+      allow write: if false;
+    }
+
     /* anything not named above is closed */
     match /{document=**} {
       allow read, write: if false;

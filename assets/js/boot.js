@@ -141,6 +141,9 @@ function authMessage(code) {
     }
   };
 
+  /* one-off reads for pages that load a dataset rather than subscribe (Email Campaigns) */
+  window.FsRead = { fs, doc, getDoc };
+
   await window.Store.initFirebase({
     fs, doc, setDoc, updateDoc, deleteDoc, writeBatch, collection, onSnapshot
   });

@@ -771,3 +771,25 @@ body{
 .flowcard{display:flex;flex-direction:column}
 .flowcard .card-b{flex:1;display:flex;flex-direction:column;justify-content:flex-end}
 .flowcard .spark{flex:1;min-height:120px}
+
+/* ==========================================================================
+   EMAIL CAMPAIGNS  -  heatmaps, filters, sync banner
+   ========================================================================== */
+.em-banner{background:var(--warn-bg);color:#7a4a06;border-radius:12px;padding:10px 14px;font-size:13px;margin-bottom:14px}
+.em-chk{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-2);padding-bottom:8px;white-space:nowrap}
+.em-heats{margin-top:0}
+.em-heat{display:flex;flex-direction:column;gap:2px;overflow-x:auto}
+.em-hrow{display:grid;grid-template-columns:34px repeat(24,minmax(16px,1fr));gap:2px;align-items:center}
+.em-hrow>span{font-size:11px;font-weight:600;color:var(--text-2)}
+.em-hhead i{font-style:normal;font-size:10px;color:var(--text-3);white-space:nowrap}
+.em-cell{height:24px;border-radius:4px;font-size:9.5px;font-weight:600;display:grid;place-items:center;cursor:default}
+.em-cell:hover{outline:2px solid var(--navy);outline-offset:-1px}
+.em-cell.na{background:repeating-linear-gradient(45deg,rgba(16,24,40,.04),rgba(16,24,40,.04) 3px,transparent 3px,transparent 6px)}
+.em-scale{display:flex;align-items:center;gap:3px;margin-top:10px;font-size:11px;color:var(--text-2)}
+.em-scale i{width:22px;height:9px;border-radius:2px;display:inline-block}
+.em-scale span{margin:0 6px}
+.em-trend{width:100%;height:auto;display:block}
+.em-ax{font-size:10.5px;fill:var(--text-3)}
+.em-subj{max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.em-toolbar{padding:12px 16px 4px}
+@media(max-width:760px){.em-hrow{grid-template-columns:28px repeat(24,minmax(11px,1fr))}.em-cell{font-size:0}}
