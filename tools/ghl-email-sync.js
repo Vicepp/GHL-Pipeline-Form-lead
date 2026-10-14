@@ -79,7 +79,8 @@ const saveState = (s) => fs.writeFileSync(STATE, JSON.stringify(s, null, 1));
 let dailyLeft = null;
 async function ghl(method, p, body) {
   for (let attempt = 0; ; attempt++) {
-    let r;
+    if (resetWait) await resetWait;   /* the allowance ran out: everyone waits on the one shared wait */
+    let r, text;
     try {
       r = await fetch(BASE + p, {
         method,
@@ -90,6 +91,7 @@ async function ghl(method, p, body) {
         body: body ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(180000)
       });
+      text = await r.text();   /* inside the try: a body that stalls is retried, not fatal */
     } catch (e) {
       await sleep(Math.min(60000, 2000 * 2 ** Math.min(attempt, 5)));
       continue;
@@ -101,7 +103,6 @@ async function ghl(method, p, body) {
       await sleep(Math.min(60000, (Number(r.headers.get('retry-after')) * 1000) || 1500 * 2 ** Math.min(attempt, 5)));
       continue;
     }
-    const text = await r.text();
     let json = null;
     try { json = JSON.parse(text); } catch (e) { /* non-json error page */ }
     return { status: r.status, json, text };
@@ -109,13 +110,19 @@ async function ghl(method, p, body) {
 }
 
 let onDailyLimit = null;   /* set by main: publish what we have before sleeping */
-async function waitForDailyReset() {
+let resetWait = null;      /* one wait shared by every worker - not one upload per worker */
+function waitForDailyReset() {
+  if (!resetWait) resetWait = doWaitForDailyReset().finally(() => { resetWait = null; });
+  return resetWait;
+}
+async function doWaitForDailyReset() {
   log('GHL daily API allowance used up - publishing progress, then waiting for it to reset.');
   if (onDailyLimit) { try { await onDailyLimit(); } catch (e) { log('upload failed:', e.message); } }
   for (;;) {
     await sleep(20 * 60 * 1000);
     const r = await fetch(BASE + '/locations/' + ENV.GHL_LOCATION_ID, {
-      headers: { Authorization: 'Bearer ' + ENV.GHL_API_TOKEN, Version: '2021-07-28' }
+      headers: { Authorization: 'Bearer ' + ENV.GHL_API_TOKEN, Version: '2021-07-28' },
+      signal: AbortSignal.timeout(60000)
     }).catch(() => null);
     if (r && r.status !== 429) {
       dailyLeft = Number(r.headers.get('x-ratelimit-daily-remaining') || 1000);
@@ -355,7 +362,12 @@ function firestore() {
   return fsAdmin;
 }
 
-async function upload(mass, statuses, contacts, final) {
+let uploading = Promise.resolve();
+function upload(mass, statuses, contacts, final) {
+  uploading = uploading.catch(() => {}).then(() => doUpload(mass, statuses, contacts, final));
+  return uploading;
+}
+async function doUpload(mass, statuses, contacts, final) {
   const db = firestore();
   if (!db) {
     log('NOT uploaded: no tools/service-account.json yet. Data is cached; it will upload once the key is there.');
