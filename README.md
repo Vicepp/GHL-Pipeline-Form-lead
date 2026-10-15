@@ -63,6 +63,8 @@ node tools/ghl-email-sync.js --upload   republish what is already cached
 
 Needs `GHL_API_TOKEN` + `GHL_LOCATION_ID` in `.env.local` and `tools/service-account.json`. GHL only reports each email's *latest* status, so it costs one API call per email; a full history can exceed GHL's ~200k calls/day, in which case the script publishes what it has, waits for the allowance to reset, and carries on. Its cache lives in `tools/.ghl-cache/` (gitignored - it holds contact emails).
 
+**Keeping it current.** Windows Task Scheduler runs `tools/ghl-email-sync.cmd` every day at 6:00 AM (task *PHC GHL Email Sync*; if the computer was off, it runs as soon as it is back on). Each run fetches emails sent since the last run and re-checks every email from the last 90 days for new opens and clicks - about 60k GHL calls, ~2 hours. Emails already clicked or failed are never re-checked, since their status cannot change. A lock file stops two runs overlapping. Change the window with `RECHECK_DAYS` in the script.
+
 ## Security model
 
 `firestore.rules` is the whole of it:

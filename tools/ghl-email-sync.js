@@ -48,7 +48,8 @@ const STATE = path.join(CACHE, 'state.json');
 
 const BASE = 'https://services.leadconnectorhq.com';
 const MASS = { campaign: 1, bulk_actions: 1 };   /* Email Campaigns + Contacts > Bulk Action */
-const RECHECK_DAYS = 21;                         /* younger emails can still be opened - look again */
+const RECHECK_DAYS = 90;                         /* younger emails can still be opened - look again */
+const FINAL = { clicked: 1, failed: 1, undelivered: 1, bounced: 1 };   /* can't change any more - never re-checked */
 const WORKERS = 8;                               /* GHL bursts at 100 per 10s */
 const UPLOAD_EVERY = 20000;                      /* publish progress this often during lookups */
 const COLL = 'emailAnalytics';
@@ -201,6 +202,7 @@ async function lookupStatuses(mass, statuses, publish) {
   const todo = mass.filter(m => {
     const s = statuses.get(m.id);
     if (!s) return true;
+    if (FINAL[s.st]) return false;
     /* a young email can still be opened; an old one is settled */
     return now - new Date(m.at).getTime() < RECHECK_DAYS * 864e5 &&
       now - new Date(s.checked || 0).getTime() > 6 * 3600e3;
@@ -421,6 +423,16 @@ if (require.main === module) (async function main() {
     process.exit(1);
   }
   fs.mkdirSync(CACHE, { recursive: true });
+  /* one run at a time: the daily scheduled run must not race a manual one */
+  const LOCK = path.join(CACHE, 'sync.lock');
+  if (fs.existsSync(LOCK)) {
+    const pid = Number(fs.readFileSync(LOCK, 'utf8'));
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } catch (e) { /* stale lock */ }
+    if (alive) { log('another sync is already running (pid ' + pid + ') - leaving it to finish'); return; }
+  }
+  fs.writeFileSync(LOCK, String(process.pid));
+  process.on('exit', () => { try { if (Number(fs.readFileSync(LOCK, 'utf8')) === process.pid) fs.unlinkSync(LOCK); } catch (e) {} });
   const state = loadState();
   const uploadOnly = process.argv.includes('--upload');
 
