@@ -63,7 +63,29 @@ node tools/ghl-email-sync.js --upload   republish what is already cached
 
 Needs `GHL_API_TOKEN` + `GHL_LOCATION_ID` in `.env.local` and `tools/service-account.json`. GHL only reports each email's *latest* status, so it costs one API call per email; a full history can exceed GHL's ~200k calls/day, in which case the script publishes what it has, waits for the allowance to reset, and carries on. Its cache lives in `tools/.ghl-cache/` (gitignored - it holds contact emails).
 
-**Keeping it current.** Windows Task Scheduler runs `tools/ghl-email-sync.cmd` every day at 6:00 AM (task *PHC GHL Email Sync*; if the computer was off, it runs as soon as it is back on). Each run fetches emails sent since the last run and re-checks every email from the last 90 days for new opens and clicks - about 60k GHL calls, ~2 hours. Emails already clicked or failed are never re-checked, since their status cannot change. A lock file stops two runs overlapping. Change the window with `RECHECK_DAYS` in the script.
+**Keeping it current.** Two Windows scheduled tasks run `tools/ghl-email-sync.cmd`:
+
+| Task | When | Does |
+|---|---|---|
+| PHC GHL Email Sync | daily 6:00 AM | new emails + re-checks the last 90 days for opens/clicks (~60k GHL calls, ~2 h) |
+| PHC GHL Email Sync (recent) | every 2 hours | `--days=3`: re-checks the last 3 days, so "Last 24 hours" stays current (~5 min) |
+
+If the computer was off, a task runs as soon as it is back on; a lock file stops two runs overlapping. Clicked and failed emails are never re-checked - their status cannot change.
+
+**Setting it up on another computer** (only one machine should run it - two would double the GHL calls):
+
+```
+git clone https://github.com/Vicepp/GHL-Pipeline-Form-lead.git
+cd GHL-Pipeline-Form-lead
+npm install
+# .env.local      : GHL_API_TOKEN=...  and  GHL_LOCATION_ID=...
+# tools\service-account.json : Firebase -> Project settings -> Service accounts -> Generate new private key
+powershell -ExecutionPolicy Bypass -File tools\install-schedule.ps1
+```
+
+The script checks all of that first and says what is missing. `-Remove` takes the tasks off again. The first run on a new machine rebuilds the cache from GHL (~10 hours of calls, spread over two days by GHL's daily limit); copy `tools/.ghl-cache/` across from the old machine to skip that.
+
+**What the page reads besides opens and clicks.** Failed sends are split by the receiving server's reply - *throttled* (sent too fast / sending limit hit: our side), *hard* (address does not exist), *soft* (full inbox), *blocked* (spam filter / reputation). Unsubscribes come from each contact's email Do-Not-Disturb setting and the reason they gave, dated from their conversation's activity log and pinned to the last email they got before it.
 
 ## Security model
 

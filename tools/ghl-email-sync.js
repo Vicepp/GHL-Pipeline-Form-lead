@@ -8,6 +8,7 @@
 
        node tools/ghl-email-sync.js            full pull, resumes if stopped
        node tools/ghl-email-sync.js --upload   just republish what is cached
+       node tools/ghl-email-sync.js --days=3   light run: re-check only the last 3 days
 
    Reads .env.local:
        GHL_API_TOKEN, GHL_LOCATION_ID          (Private Integration token)
@@ -20,7 +21,9 @@
                                           delivered / opened / clicked.
                                           The export's status is stale,
                                           so this is one call per email.
-     POST /contacts/search                names for the recipients
+     POST /contacts/search                names, and who has unsubscribed (email DND
+                                          + the reason they gave)
+     GET  /conversations/<id>/messages    the date each unsubscribe happened
    GHL allows ~200k calls a day. A full history can exceed that, so when
    the daily allowance runs out this publishes what it has, waits, and
    carries on. Everything is cached in tools/.ghl-cache/ (gitignored -
@@ -29,9 +32,11 @@
    What lands in Firestore - collection emailAnalytics, team-read-only:
      meta              counts, sync time, and the names of the chunks below
      campaigns_<v>     one line per send: subject, source, date
-     contacts_<v>_NNN  one line per contact: id, name, email
+     contacts_<v>_NNN  one line per contact: id, name, email, unsubscribe
+                       reason code, unsubscribe date
      events_<v>_NNN    one line per email sent: who, which send, when,
-                       status, seconds until the last open/click, bot flag
+                       status (failed split into hard / soft / blocked),
+                       seconds until the last open/click, bot flag
    Packed into ~30 documents rather than 270k, so the page loads in one
    go and a page view costs ~30 reads instead of a quarter of a million. */
 
@@ -45,10 +50,15 @@ const CURSOR = path.join(CACHE, 'export.cursor');
 const STATUS = path.join(CACHE, 'status.jsonl');
 const CONTACTS = path.join(CACHE, 'contacts.json');
 const STATE = path.join(CACHE, 'state.json');
+const DND = path.join(CACHE, 'dnd.json');
 
 const BASE = 'https://services.leadconnectorhq.com';
 const MASS = { campaign: 1, bulk_actions: 1 };   /* Email Campaigns + Contacts > Bulk Action */
-const RECHECK_DAYS = 90;                         /* younger emails can still be opened - look again */
+/* --days N: a light run that only re-checks the last N days (the 2-hourly
+   run uses 3, which keeps the page's "last 24 hours" view current) */
+const DAYS_ARG = (process.argv.find(a => /^--days=\d+$/.test(a)) || '').split('=')[1];
+const RECHECK_DAYS = DAYS_ARG ? Number(DAYS_ARG) : 90;   /* younger emails can still be opened - look again */
+const STALE_MS = (DAYS_ARG ? 1 : 6) * 3600e3;          /* don't re-check anything looked at more recently */
 const FINAL = { clicked: 1, failed: 1, undelivered: 1, bounced: 1 };   /* can't change any more - never re-checked */
 const WORKERS = 8;                               /* GHL bursts at 100 per 10s */
 const UPLOAD_EVERY = 20000;                      /* publish progress this often during lookups */
@@ -202,10 +212,11 @@ async function lookupStatuses(mass, statuses, publish) {
   const todo = mass.filter(m => {
     const s = statuses.get(m.id);
     if (!s) return true;
+    if (s.st === 'failed' && s.err === undefined) return true;   /* reason not fetched yet */
     if (FINAL[s.st]) return false;
     /* a young email can still be opened; an old one is settled */
     return now - new Date(m.at).getTime() < RECHECK_DAYS * 864e5 &&
-      now - new Date(s.checked || 0).getTime() > 6 * 3600e3;
+      now - new Date(s.checked || 0).getTime() > STALE_MS;
   }).sort((a, b) => new Date(b.at) - new Date(a.at));   /* newest first: the page is useful sooner */
   log('status lookups: ' + (mass.length - todo.length) + ' settled, ' + todo.length + ' to fetch');
   if (!todo.length) return;
@@ -224,6 +235,7 @@ async function lookupStatuses(mass, statuses, publish) {
         up: e ? e.dateUpdated : null,
         checked: new Date().toISOString()
       };
+      if (s.st === 'failed') s.err = String((e && e.error) || '').replace(/\s+/g, ' ').slice(0, 240);
       statuses.set(m.id, s);
       out.write(JSON.stringify(s) + '\n');
       done++; sinceUpload++;
@@ -244,8 +256,8 @@ async function lookupStatuses(mass, statuses, publish) {
 async function loadContacts(wanted) {
   const cached = fs.existsSync(CONTACTS) ? JSON.parse(fs.readFileSync(CONTACTS, 'utf8')) : {};
   const missing = [...wanted].filter(id => id && !cached[id]);
-  if (!missing.length) return cached;
-  log('contacts: ' + Object.keys(cached).length + ' cached, ' + missing.length + ' missing - paging the contact list');
+  /* paged every run, not just when someone is missing: unsubscribes change daily */
+  log('contacts: ' + Object.keys(cached).length + ' cached, ' + missing.length + ' new - paging the contact list');
   let searchAfter = null, page = 1, n = 0;
   for (;;) {
     const body = { locationId: ENV.GHL_LOCATION_ID, pageLimit: 500 };
@@ -254,10 +266,13 @@ async function loadContacts(wanted) {
     if (r.status !== 200) { log('contact search stopped: ' + r.status + ' ' + r.text.slice(0, 200)); break; }
     const cs = r.json.contacts || [];
     cs.forEach(c => {
+      const de = (c.dndSettings && c.dndSettings.Email) || {};
       cached[c.id] = {
         n: [c.firstNameLowerCase || c.firstName || '', c.lastNameLowerCase || c.lastName || '']
           .map(x => String(x || '').replace(/\b\w/g, ch => ch.toUpperCase())).join(' ').trim(),
-        e: c.email || ''
+        e: c.email || '',
+        /* unsubscribed from email: the reason text GHL stored, or '' */
+        u: de.status === 'active' ? (de.message || 'unsubscribed') : c.dnd === true ? (de.message || 'all channels') : ''
       };
     });
     n += cs.length;
@@ -272,12 +287,46 @@ async function loadContacts(wanted) {
   for (const id of still) {
     const r = await ghl('GET', '/contacts/' + id);
     const c = r.status === 200 && r.json && r.json.contact;
+    const de = (c && c.dndSettings && c.dndSettings.Email) || {};
     cached[id] = c
-      ? { n: [c.firstName, c.lastName].filter(Boolean).join(' '), e: c.email || '' }
+      ? { n: [c.firstName, c.lastName].filter(Boolean).join(' '), e: c.email || '',
+          u: de.status === 'active' ? (de.message || 'unsubscribed') : c.dnd === true ? 'all channels' : '' }
       : { n: '', e: '', gone: true };
   }
   fs.writeFileSync(CONTACTS, JSON.stringify(cached));
   return cached;
+}
+
+/* ------------------------------------------- 3b. unsubscribe dates
+   GHL keeps the reason on the contact but the date only in their
+   conversation's activity log ("DND enabled by customer"). Two calls per
+   unsubscriber, once - the answer is cached in dnd.json.               */
+async function loadUnsubDates(contacts) {
+  const dates = fs.existsSync(DND) ? JSON.parse(fs.readFileSync(DND, 'utf8')) : {};
+  const todo = Object.keys(contacts).filter(id => contacts[id].u && !(id in dates));
+  Object.keys(dates).forEach(id => { if (contacts[id] && !contacts[id].u) delete dates[id]; });  /* resubscribed */
+  if (todo.length) log('unsubscribe dates: looking up ' + todo.length + ' contacts');
+  for (const id of todo) {
+    let at = null;
+    const cv = await ghl('GET', '/conversations/search?locationId=' + ENV.GHL_LOCATION_ID + '&contactId=' + id);
+    const conv = cv.json && cv.json.conversations && cv.json.conversations[0];
+    let lastId = null;
+    for (let page = 0; conv && page < 5 && !at; page++) {
+      const r = await ghl('GET', '/conversations/' + conv.id + '/messages?limit=100' + (lastId ? '&lastMessageId=' + lastId : ''));
+      const box = r.json && r.json.messages;
+      const ms = (box && box.messages) || [];
+      for (const m of ms) {
+        const a = m.activity || {};
+        const ch = (a.data && a.data.channel) || [];
+        if (/dnd_enabled/i.test(a.type || '') && (!ch.length || ch.indexOf('Email') >= 0)) { at = m.dateAdded; break; }
+      }
+      if (!box || !box.nextPage || !ms.length) break;
+      lastId = box.lastMessageId;
+    }
+    dates[id] = at;
+  }
+  fs.writeFileSync(DND, JSON.stringify(dates));
+  return dates;
 }
 
 /* ----------------------------------------------------- 4. pack + push */
@@ -285,36 +334,108 @@ const ST_CODE = {
   delivered: 'd', opened: 'o', read: 'o', clicked: 'c', sent: 's', pending: 's', scheduled: 's',
   failed: 'f', undelivered: 'f', bounced: 'f', rejected: 'f', unsubscribed: 'u', complained: 'm'
 };
+/* why a send failed, from the receiving server's reply */
+/* Order matters - checked against the real replies in this account:
+   "mailbox is full" arrives as a 5.x code but is temporary, and "request limit
+   exceeded" mentions "not allowed" but is our own sending limit, not a block. */
+function failKind(err) {
+  const e = String(err || '');
+  /* t - we sent too fast: the provider throttled us, or GHL/Mailgun's sending
+         limit was hit, or retries ran out ("Too old") after that */
+  if (/limit exceeded|concurrent connections|too many|rate limit|^too old|throttl/i.test(e)) return 't';
+  /* q - soft: the recipient's side, temporary */
+  if (/mailbox (is )?full|over quota|quota|out of storage|storage space|unable to connect|connection failed|temporar|try again later/i.test(e)) return 'q';
+  /* h - hard: the address or domain does not exist */
+  if (/previously bounced|no mx|no such host|does not exist|no such user|user unknown|unknown user|invalid recipient|address rejected|not found|unavailable|disabled|inactive/i.test(e)) return 'h';
+  /* k - refused: spam filter, IP/domain reputation, recipient policy */
+  if (/spam|block|blacklist|policy|reputation|weren't sent|5\.7\.\d|denied|not allowed|rejected/i.test(e)) return 'k';
+  if (/^5|\s5\.\d\.\d/.test(e)) return 'h';
+  if (/^4|\s4\.\d\.\d/.test(e)) return 'q';
+  return 'f';
+}
+/* what the unsubscriber said */
+function unsubKind(msg) {
+  const m = String(msg || '');
+  if (!m) return '';
+  if (/never signed up/i.test(m)) return 'x';
+  if (/spam complaint/i.test(m)) return 's';
+  if (/permanent bounce/i.test(m)) return 'p';
+  if (/no longer want/i.test(m)) return 'n';
+  if (/unsubscribe link/i.test(m)) return 'l';
+  return 'm';
+}
+
 /* merge-field subjects ("Emmanuel, let's finish the story") are one send, not one per name */
-const normSubject = (s) => String(s || '(no subject)')
-  .replace(/^[A-Za-z][A-Za-z'.\- ]{0,24},\s*|^,\s*/, '{first_name}, ').replace(/[\t\n\r]+/g, ' ').trim();
+/* The recipient's own first name is replaced wherever it sits ("Did you forget
+   something, Ramon?"); only when it isn't found is a short leading "Name," taken
+   as the merge field - for names GHL filled in that our contact list lacks. */
+const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function normSubject(s, name) {
+  let t = String(s || '(no subject)').replace(/[\t\n\r]+/g, ' ').replace(/\s+([?!.,])/g, '$1').trim();
+  const full = String(name || '').trim();
+  const first = full.split(/\s+/)[0] || '';
+  let hit = false;
+  /* full name first ("Uche Uka"), then the first name alone */
+  for (const nm of [full, first]) {
+    if (hit || !nm || (nm === full && !/\s/.test(full))) continue;
+    const re = new RegExp('(^|[^\\p{L}])' + reEsc(nm) + '(?=$|[^\\p{L}])', 'giu');
+    t = t.replace(re, (m0, pre) => { hit = true; return pre + '{first_name}'; });
+  }
+  t = t.replace(/^\{first_name\}[^,]{1,20},/, '{first_name},');   /* "Binyamin (Ben)," */
+  if (!hit) {
+    t = t.replace(/^,\s*|^[^\s,\d]+(?:\s+[^\s,\d]+)?,\s*(?=\S)/u, '{first_name}, ')     /* "Name, ..."  */
+      .replace(/,\s*[^\s,\d{}]+(?:\s+[^\s,\d{}]+)?([?!.])$/u, ', {first_name}$1');        /* "..., Name?" */
+  }
+  return t;
+}
 const chicagoDay = (iso) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
 const clean = (s) => String(s || '').replace(/[\t\n\r]+/g, ' ').trim();
 
-function pack(mass, statuses, contacts) {
+function pack(mass, statuses, contacts, dnd) {
   const campIdx = new Map(), camps = [];
   const contIdx = new Map(), conts = [];
   const rows = [];
   let looked = 0;
   mass.sort((a, b) => new Date(a.at) - new Date(b.at));
+  /* A merge-field guess is kept only when it actually merges: 2+ differently
+     worded subjects that day collapse to it. A contact called "Grove" whose
+     "Grove Parkview" subject turns into "{first_name} Parkview" merges with
+     nothing, so it keeps its real subject. */
+  const rawSubj = (m) => String(m.sub || '(no subject)').replace(/[\t\n\r]+/g, ' ').trim();
+  const guess = new Map(), variants = new Map();
   for (const m of mass) {
-    const subj = normSubject(m.sub);
-    const ck = subj + '\t' + m.s + '\t' + chicagoDay(m.at);
+    const g = normSubject(m.sub, (contacts[m.c] || {}).n);
+    guess.set(m.id, g);
+    const k = g + '\t' + m.s + '\t' + chicagoDay(m.at);
+    if (!variants.has(k)) variants.set(k, new Set());
+    variants.get(k).add(rawSubj(m));
+  }
+  for (const m of mass) {
+    const g = guess.get(m.id);
+    const day = chicagoDay(m.at);
+    const subj = variants.get(g + '\t' + m.s + '\t' + day).size >= 2 ? g : rawSubj(m);
+    const ck = subj + '\t' + m.s + '\t' + day;
     if (!campIdx.has(ck)) { campIdx.set(ck, camps.length); camps.push(ck); }
     const who = m.c || ('email:' + m.to.toLowerCase());
     if (!contIdx.has(who)) {
       const c = contacts[m.c] || {};
       contIdx.set(who, conts.length);
-      conts.push([m.c, clean(c.n), clean(m.to || c.e).toLowerCase()].join('\t'));
+      const ua = dnd && dnd[m.c] ? Math.round(new Date(dnd[m.c]).getTime() / 1000).toString(36) : '';
+      conts.push([m.c, clean(c.n), clean(m.to || c.e).toLowerCase(), unsubKind(c.u), ua].join('\t'));
     }
     const s = statuses.get(m.id);
     if (s) looked++;
     const raw = s ? s.st : (m.st || 'sent');
-    const code = ST_CODE[raw] || (raw.indexOf('error') === 0 ? 'x' : 'x');
+    let code = ST_CODE[raw] || 'x';
+    if (code === 'f') code = failKind(s && s.err);
     const sent = Math.round(new Date(m.at).getTime() / 1000);
     const up = s && s.up ? Math.round(new Date(s.up).getTime() / 1000) : 0;
     const engaged = code === 'o' || code === 'c';
-    rows.push({ ci: contIdx.get(who), ki: campIdx.get(ck), sent, code, dl: engaged && up >= sent ? up - sent : -1 });
+    /* the 2-minute scanner test uses the exact gap: rounding each time to the
+       second first let a 120.4s click count as 120s and be flagged */
+    const exact = s && s.up ? (new Date(s.up).getTime() - new Date(m.at).getTime()) / 1000 : -1;
+    rows.push({ ci: contIdx.get(who), ki: campIdx.get(ck), sent, code, dl: engaged && up >= sent ? up - sent : -1,
+      fast: engaged && exact >= 0 && exact <= 120 });
   }
   /* security scanners at work/university addresses "click" every link within
      seconds of delivery - flag them so the page can count real people only */
@@ -326,7 +447,7 @@ function pack(mass, statuses, contacts) {
   });
   const lines = rows.map(r => {
     const p = per.get(r.ci);
-    const bot = r.code === 'c' && ((r.dl >= 0 && r.dl <= 120) || (p.n >= 5 && p.c / p.n >= 0.8));
+    const bot = r.code === 'c' && (r.fast || (p.n >= 5 && p.c / p.n >= 0.8));
     return r.ci.toString(36) + ',' + r.ki.toString(36) + ',' + r.sent.toString(36) + ',' + r.code +
       ',' + (r.dl >= 0 ? r.dl.toString(36) : '') + (bot ? ',b' : '');
   });
@@ -370,12 +491,14 @@ function upload(mass, statuses, contacts, final) {
   return uploading;
 }
 async function doUpload(mass, statuses, contacts, final) {
+  if (process.argv.includes("--no-upload")) { log("(--no-upload: not publishing)"); return false; }
   const db = firestore();
   if (!db) {
     log('NOT uploaded: no tools/service-account.json yet. Data is cached; it will upload once the key is there.');
     return false;
   }
-  const { camps, conts, lines, looked } = pack(mass.slice(), statuses, contacts);
+  const dnd = fs.existsSync(DND) ? JSON.parse(fs.readFileSync(DND, 'utf8')) : {};
+  const { camps, conts, lines, looked } = pack(mass.slice(), statuses, contacts, dnd);
   const v = Date.now().toString(36);
   const evChunks = chunk(lines, 700000);
   const ctChunks = chunk(conts, 700000);
@@ -401,7 +524,8 @@ async function doUpload(mass, statuses, contacts, final) {
     lastSent: sent[sent.length - 1] || null,
     timezone: 'America/Chicago',
     chunks: ids,
-    format: 'events: contact,campaign,sentEpoch,status,secsToLastActivity[,b] (base36)'
+    format: 'events: contact,campaign,sentEpoch,status,secsToLastActivity[,b] (base36); ' +
+      'status f/h/q/k = failed other/hard/soft/blocked; contacts: id,name,email,unsubKind,unsubEpoch36'
   });
   /* then retire the previous version's chunks */
   if (prev.exists) {
@@ -416,7 +540,7 @@ async function doUpload(mass, statuses, contacts, final) {
 }
 
 /* -------------------------------------------------------------- main */
-module.exports = { pack, normSubject };
+module.exports = { pack, normSubject, failKind, unsubKind };
 if (require.main === module) (async function main() {
   if (!ENV.GHL_API_TOKEN || !ENV.GHL_LOCATION_ID) {
     console.error('Add GHL_API_TOKEN and GHL_LOCATION_ID to .env.local first.');
@@ -457,6 +581,7 @@ if (require.main === module) (async function main() {
   if (!uploadOnly) {
     log('2) contact names');
     contacts = await loadContacts(new Set(mass.map(m => m.c)));
+    await loadUnsubDates(contacts);
     await publish();
     log('3) live open/click status, newest emails first');
     await lookupStatuses(mass, statuses, publish);

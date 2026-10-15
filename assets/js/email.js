@@ -27,7 +27,7 @@ let emData = null;       /* decoded dataset */
 let emMeta = null;
 let emLoading = false;
 let emError = null;
-let emF = { preset: '90', from: '', to: '', camp: 'all', source: 'all', status: 'all', audience: 'all', q: '', bots: false };
+let emF = { preset: '90', from: '', to: '', camps: [], source: 'all', status: 'all', audience: 'all', q: '', bots: false };
 let emPeopleView = 'contacts';   /* contacts | emails | campaigns */
 let emSort = 'engaged';
 let emShow = 200;
@@ -98,8 +98,9 @@ function emDecode(evChunks, ctChunks, cpChunks) {
   const conts = [];
   ctChunks.join('\n').split('\n').forEach(l => {
     if (!l) return;
-    const [id, name, email] = l.split('\t');
-    conts.push({ id, name: name || '', email: email || '', key: (name + ' ' + email).toLowerCase() });
+    const [id, name, email, unsub, unsubAt] = l.split('\t');
+    conts.push({ id, name: name || '', email: email || '', key: (name + ' ' + email).toLowerCase(),
+      unsub: unsub || '', unsubAt: unsubAt ? parseInt(unsubAt, 36) : 0 });
   });
   const lines = evChunks.join('\n').split('\n').filter(Boolean);
   const n = lines.length;
@@ -135,7 +136,9 @@ function emDecode(evChunks, ctChunks, cpChunks) {
   }
   let minDay = Infinity, maxDay = -Infinity;
   for (let i = 0; i < n; i++) { if (E.day[i] < minDay) minDay = E.day[i]; if (E.day[i] > maxDay) maxDay = E.day[i]; }
-  return { camps, conts, E, firstOpen, minDay, maxDay };
+  const D = { camps, conts, E, firstOpen, minDay, maxDay };
+  emDecodeHealth(D);
+  return D;
 }
 
 const C_O = 'o'.charCodeAt(0), C_C = 'c'.charCodeAt(0), C_F = 'f'.charCodeAt(0),
@@ -160,21 +163,26 @@ function emRange() {
 function emSelect() {
   const D = emData, E = D.E, r = emRange();
   const q = emF.q.trim().toLowerCase();
-  const camp = emF.camp === 'all' ? -1 : Number(emF.camp);
+  const pick = emF.camps.length ? new Set(emF.camps) : null;
   const bots = emF.bots;
   const keep = [];
   for (let i = 0; i < E.n; i++) {
     const d = E.day[i];
     if (d < r.from || d > r.to) continue;
-    if (camp >= 0 && E.ki[i] !== camp) continue;
+    if (pick && !pick.has(E.ki[i])) continue;
     if (emF.source !== 'all' && D.camps[E.ki[i]].source !== emF.source) continue;
     if (emF.status !== 'all') {
       const o = emIsOpen(E, i, bots), c = emIsClick(E, i, bots);
       if (emF.status === 'opened' && !o) continue;
       if (emF.status === 'clicked' && !c) continue;
       if (emF.status === 'opened-no-click' && (!o || c)) continue;
-      if (emF.status === 'unopened' && (o || E.st[i] === C_F)) continue;
-      if (emF.status === 'failed' && E.st[i] !== C_F) continue;
+      if (emF.status === 'unopened' && (o || emFailed(E.st[i]))) continue;
+      if (emF.status === 'failed' && !emFailed(E.st[i])) continue;
+      if (emF.status === 'hard' && E.st[i] !== C_H) continue;
+      if (emF.status === 'soft' && E.st[i] !== C_Q) continue;
+      if (emF.status === 'blocked' && E.st[i] !== C_K) continue;
+      if (emF.status === 'throttled' && E.st[i] !== C_T) continue;
+      if (emF.status === 'unsub' && !E.unsubEv[i]) continue;
       if (emF.status === 'bot' && !E.bot[i]) continue;
     }
     if (emF.audience !== 'all') {
@@ -182,6 +190,8 @@ function emSelect() {
       if (emF.audience === 'new' && !(fo >= r.from && fo <= r.to)) continue;
       if (emF.audience === 'previous' && !(fo < r.from)) continue;
       if (emF.audience === 'never' && fo !== 0x7fffffff) continue;
+      if (emF.audience === 'unsub' && !D.conts[E.ci[i]].unsub) continue;
+      if (emF.audience === 'subscribed' && D.conts[E.ci[i]].unsub) continue;
     }
     if (q && D.conts[E.ci[i]].key.indexOf(q) < 0 && D.camps[E.ki[i]].subject.toLowerCase().indexOf(q) < 0) continue;
     keep.push(i);
@@ -206,7 +216,7 @@ function emAggregate(sel) {
     const ci = E.ci[i], ki = E.ki[i];
     const o = emIsOpen(E, i, bots), c = emIsClick(E, i, bots);
     a.contacts.add(ci);
-    if (E.st[i] === C_F) a.failed++;
+    if (emFailed(E.st[i])) a.failed++;
     if (E.bot[i]) a.botClicks++;
     if (E.st[i] === C_C) a.clickIdx.push(i);
     if (o) { a.opened++; a.openers.add(ci); }
@@ -225,7 +235,7 @@ function emAggregate(sel) {
 
     let k = a.camps.get(ki);
     if (!k) { k = { ki, n: 0, f: 0, o: 0, c: 0, b: 0, first: E.sent[i] }; a.camps.set(ki, k); }
-    k.n++; if (E.st[i] === C_F) k.f++; if (o) k.o++; if (c) k.c++; if (E.bot[i]) k.b++;
+    k.n++; if (emFailed(E.st[i])) k.f++; if (o) k.o++; if (c) k.c++; if (E.bot[i]) k.b++;
     if (E.sent[i] < k.first) k.first = E.sent[i];
 
     let p = a.people.get(ci);
@@ -399,12 +409,6 @@ function viewEmailCampaigns() {
 
   /* ---------- filters ---------- */
 
-  const campList = D.camps.map((c, i) => ({ i, c })).filter(x => x.c.day >= r.from && x.c.day <= r.to)
-    .sort((x, y) => y.c.day - x.c.day);
-  if (emF.camp !== 'all' && !campList.some(x => String(x.i) === String(emF.camp))) {
-    const c = D.camps[Number(emF.camp)];
-    if (c) campList.unshift({ i: Number(emF.camp), c });
-  }
   const sources = [...new Set(D.camps.map(c => c.source))];
   const filters =
     '<div class="card" style="margin-bottom:16px"><div class="card-b wb-filters">' +
@@ -414,24 +418,22 @@ function viewEmailCampaigns() {
         '" min="' + emDayIso(D.minDay) + '" max="' + emDayIso(D.maxDay) + '"></label>' +
       '<label class="wb-f"><span>To</span><input type="date" class="inp sort-sel" data-emf="to" value="' + emDayIso(r.to) +
         '" min="' + emDayIso(D.minDay) + '" max="' + emDayIso(Math.max(D.maxDay, r.to)) + '"></label>' +
-      '<label class="wb-f"><span>Email / campaign</span><select class="inp sort-sel" data-emf="camp">' +
-        '<option value="all">All emails (' + campList.length + ')</option>' +
-        campList.map(x => '<option value="' + x.i + '"' + (String(emF.camp) === String(x.i) ? ' selected' : '') + '>' +
-          esc(emDayIso(x.c.day) + ' - ' + x.c.subject).slice(0, 90) + '</option>').join('') +
-      '</select></label>' +
+      emPicker(r) +
       (sources.length > 1 ? emSel('source', 'Sent from', [['all', 'Everywhere']].concat(sources.map(s =>
         [s, s === 'bulk_actions' ? 'Bulk action' : s === 'campaign' ? 'Campaign' : s])), emF.source) : '') +
       emSel('status', 'Status', [['all', 'Every email'], ['opened', 'Opened'], ['clicked', 'Clicked a link'],
-        ['opened-no-click', 'Opened, no click'], ['unopened', 'Not opened'], ['failed', 'Failed'], ['bot', 'Scanner (bot) clicks']], emF.status) +
+        ['opened-no-click', 'Opened, no click'], ['unopened', 'Not opened'], ['failed', 'Failed / bounced'], ['hard', '- hard bounce'], ['soft', '- soft bounce'],
+        ['blocked', '- blocked / spam filter'], ['throttled', '- throttled (sent too fast)'], ['unsub', 'Unsubscribed after it'], ['bot', 'Scanner (bot) clicks']], emF.status) +
       emSel('audience', 'Contacts', [['all', 'Everyone'], ['new', 'Newly opened (first open in range)'],
-        ['previous', 'Previously opened (before range)'], ['never', 'Never opened anything']], emF.audience) +
+        ['previous', 'Previously opened (before range)'], ['never', 'Never opened anything'],
+        ['subscribed', 'Still subscribed'], ['unsub', 'Unsubscribed']], emF.audience) +
       '<label class="wb-f"><span>Search</span><input class="inp sort-sel" data-emf="q" placeholder="name, email or subject" value="' + esc(emF.q) + '"></label>' +
       '<label class="em-chk"><input type="checkbox" data-emf="bots"' + (emF.bots ? ' checked' : '') + '> Count scanner clicks</label>' +
       '<button class="btn btn-sm" data-act="em-clear">Clear</button>' +
     '</div></div>';
 
   if (!sel.idx.length) {
-    shell('email', head, banner + filters + '<div class="card"><div class="empty">No emails match these filters.</div></div>');
+    shell('email', head, banner + emLast24() + filters + '<div class="card"><div class="empty">No emails match these filters.</div></div>');
     return;
   }
 
@@ -470,6 +472,7 @@ function viewEmailCampaigns() {
           : '<b>Not enough sends yet to recommend a time</b><span>Each day-and-hour slot needs at least ' + rec.minN +
             ' emails before its open rate means anything. Widen the date range.</span>') +
       '</div>' +
+      '<button class="btn btn-gold" data-act="em-analysis">Full analysis &amp; recommendations</button>' +
     '</div>' +
     '<div class="card gauges"><div class="card-b">' +
       gauge(openRate, 'Open rate', a.opened.toLocaleString() + ' of ' + a.delivered.toLocaleString() + ' delivered', EM_BLUE) +
@@ -538,6 +541,8 @@ function viewEmailCampaigns() {
   people.sort(sorters[emSort] || sorters.engaged);
   const badge = (ci) => {
     const fo = D.firstOpen[ci];
+    if (D.conts[ci].unsub) return '<span class="pill bad" title="' + esc(EM_UNSUB[D.conts[ci].unsub] || '') +
+      (D.conts[ci].unsubAt ? ' - ' + esc(emStamp(D.conts[ci].unsubAt)) : '') + '">unsubscribed</span>';
     if (fo === 0x7fffffff) return '<span class="pill">never opened</span>';
     if (fo >= r.from && fo <= r.to) return '<span class="wb-new" title="Their first-ever open is in this date range">NEW OPENER</span>';
     return '<span class="pill ok" title="First opened on ' + esc(emDayLabel(fo)) + '">opened before</span>';
@@ -584,11 +589,11 @@ function viewEmailCampaigns() {
 
   const y = window.scrollY;
   shell('email', head,
-    banner + filters + tiles +
+    banner + emLast24() + filters + tiles +
     '<div class="two dash-mid"><div>' + emTrend(a, r) + '</div><div>' + recCard + '</div></div>' +
     '<div class="two em-heats"><div>' + heatEngage + '</div><div>' + heatSend + '</div></div>' +
     '<div class="two" style="margin-top:16px"><div>' + dayBars + hourBars + '</div><div>' + lagBars + '</div></div>' +
-    listCard);
+    emHealthCard(emHealthStats(sel)) + listCard);
   if (emKeepScroll) { window.scrollTo(0, y); }
 }
 
@@ -602,6 +607,10 @@ function emStatusPill(E, i) {
   if (E.bot[i]) return '<span class="pill warn" title="Clicked within 2 minutes, or this address clicks nearly every email - a mail security scanner">scanner click</span>';
   if (s === C_C) return '<span class="pill ok">clicked</span>';
   if (s === C_O) return '<span class="pill info">opened</span>';
+  if (s === C_H) return '<span class="pill bad" title="The address does not exist">hard bounce</span>';
+  if (s === C_Q) return '<span class="pill warn" title="Full inbox or a temporary problem">soft bounce</span>';
+  if (s === C_K) return '<span class="pill bad" title="Refused as spam or by policy">blocked</span>';
+  if (s === C_T) return '<span class="pill warn" title="Sent too fast - the provider or the sending limit refused it; it never arrived">throttled</span>';
   if (s === C_F) return '<span class="pill bad">failed</span>';
   if (s === C_D) return '<span class="pill">delivered</span>';
   if (s === C_S) return '<span class="pill">sent</span>';
@@ -718,6 +727,426 @@ function emClickQuality(a) {
   return head + '<div class="two em-cq-two"><div>' + speedCard + '</div><div>' + kindCard + '</div></div>' + domCard + whoCard;
 }
 
+/* ------------------------------------------------------------ last 24 hours
+   Who opened or clicked, and on which email, in the 24 hours up to the
+   last sync. Anchored to the sync - not to "now" - because nothing after
+   the sync is in the data yet, and saying "last 24 hours" over a window
+   that is half empty would undercount without saying so. Independent of
+   the filters below it; the scanner-click setting still applies.       */
+let emL24 = 'contacts';   /* contacts | campaigns */
+function emLast24() {
+  const D = emData, E = D.E, bots = emF.bots;
+  const end = Math.round(new Date(emMeta && emMeta.syncedAt ? emMeta.syncedAt : Date.now()).getTime() / 1000);
+  const start = end - 86400;
+  const hours = Array.from({ length: 24 }, () => ({ o: 0, c: 0 }));
+  const camps = new Map(), people = new Map();
+  let opens = 0, clicks = 0;
+  for (let i = 0; i < E.n; i++) {
+    if (E.dl[i] < 0) continue;
+    const at = E.sent[i] + E.dl[i];
+    if (at < start || at > end) continue;
+    const o = emIsOpen(E, i, bots);
+    if (!o) continue;
+    const c = emIsClick(E, i, bots);
+    opens++; if (c) clicks++;
+    const h = hours[Math.min(23, Math.floor((at - start) / 3600))];
+    if (c) h.c++; else h.o++;
+    const k = camps.get(E.ki[i]) || { ki: E.ki[i], o: 0, c: 0, last: 0, people: new Set() };
+    k.o++; if (c) k.c++; if (at > k.last) k.last = at; k.people.add(E.ci[i]);
+    camps.set(E.ki[i], k);
+    const p = people.get(E.ci[i]) || { ci: E.ci[i], acts: [] };
+    p.acts.push({ i, at, c });
+    people.set(E.ci[i], p);
+  }
+  const syncTxt = emStamp(end);
+  const headH = '<div class="card-h"><h3>Last 24 hours</h3><span class="tiny muted">up to the last sync, ' + esc(syncTxt) +
+    ' CT &middot; not affected by the filters below</span><div class="spacer"></div>';
+  if (!opens) {
+    return '<div class="card" style="margin-bottom:16px">' + headH + '</div><div class="empty">No opens or clicks in the 24 hours before the last sync.</div></div>';
+  }
+
+  /* hour-by-hour columns, stacked: opened-only underneath, clicked on top */
+  const W = 720, H = 150, L = 30, B = 22, T = 8;
+  const max = Math.max(1, ...hours.map(h => h.o + h.c));
+  const bw = (W - L) / 24;
+  const y = (v) => (H - B - T) * v / max;
+  const cols = hours.map((h, j) => {
+    const x = L + j * bw + 2, w = bw - 4;
+    const ho = y(h.o), hc = y(h.c);
+    const t0 = start + j * 3600;
+    const tip = emStamp(t0) + ' - ' + emStamp(t0 + 3600).replace(/^.*, /, '') + '\n' + (h.o + h.c) + ' opened' +
+      (h.c ? ', ' + h.c + ' of them clicked' : '');
+    return '<g><title>' + esc(tip) + '</title>' +
+      (ho ? '<rect x="' + x.toFixed(1) + '" y="' + (H - B - ho).toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + ho.toFixed(1) + '" rx="2" fill="' + EM_BLUE + '"/>' : '') +
+      (hc ? '<rect x="' + x.toFixed(1) + '" y="' + (H - B - ho - hc - (ho ? 2 : 0)).toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + hc.toFixed(1) + '" rx="2" fill="' + EM_GREEN + '"/>' : '') +
+      '<rect x="' + (L + j * bw).toFixed(1) + '" y="' + T + '" width="' + bw.toFixed(1) + '" height="' + (H - B - T) + '" fill="transparent"/></g>';
+  }).join('');
+  const xl = hours.map((_, j) => (j % 3 === 0
+    ? '<text x="' + (L + j * bw + bw / 2).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle" class="em-ax">' +
+      esc(emHourLabel(emCal(start + j * 3600).hour)) + '</text>' : '')).join('');
+  const yl = '<text x="' + (L - 6) + '" y="' + (T + 8) + '" text-anchor="end" class="em-ax">' + max + '</text>' +
+    '<text x="' + (L - 6) + '" y="' + (H - B) + '" text-anchor="end" class="em-ax">0</text>' +
+    '<line x1="' + L + '" x2="' + W + '" y1="' + (H - B) + '" y2="' + (H - B) + '" stroke="rgba(16,24,40,.12)"/>';
+  const chart = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="em-trend" role="img" aria-label="Opens and clicks per hour, last 24 hours">' +
+    yl + cols + xl + '</svg>';
+
+  const nPeople = people.size, nClickers = [...people.values()].filter(p => p.acts.some(a => a.c)).length;
+  const stats = '<div class="em-cq em-l24">' +
+    '<div><b>' + opens.toLocaleString() + '</b><span>emails opened</span></div>' +
+    '<div class="ok"><b>' + clicks.toLocaleString() + '</b><span>' + (bots ? 'clicked (scanners included)' : 'genuine clicks') + '</span></div>' +
+    '<div><b>' + nPeople.toLocaleString() + '</b><span>people engaged</span></div>' +
+    '<div><b>' + nClickers.toLocaleString() + '</b><span>people clicked</span></div>' +
+    '<div><b>' + camps.size.toLocaleString() + '</b><span>emails they engaged with</span></div></div>';
+
+  const seg = (v, l, n) => '<button class="seg-btn ' + (emL24 === v ? 'on' : '') + '" data-act="em-l24" data-v="' + v + '">' + l + ' <b>' + n + '</b></button>';
+  let list;
+  if (emL24 === 'campaigns') {
+    const ks = [...camps.values()].sort((a, b) => b.o - a.o);
+    list = '<div class="scroll-x em-l24-list"><table class="tbl"><thead><tr><th>Email</th><th>Sent</th><th>Opened</th><th>Clicked</th><th>People</th><th>Latest</th></tr></thead><tbody>' +
+      ks.map(k => {
+        const c = D.camps[k.ki];
+        return '<tr><td><a href="#" class="n" data-act="em-camp" data-v="' + k.ki + '">' + esc(c.subject) + '</a></td>' +
+          '<td class="tiny muted">' + esc(emDayLabel(c.day)) + '</td><td><b>' + k.o + '</b></td>' +
+          '<td>' + (k.c ? '<span class="pill ok">' + k.c + '</span>' : '<span class="tiny muted">0</span>') + '</td>' +
+          '<td>' + k.people.size + '</td><td class="tiny">' + esc(emStamp(k.last)) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+  } else {
+    const ps = [...people.values()].map(p => { p.acts.sort((a, b) => b.at - a.at); return p; })
+      .sort((a, b) => (b.acts.some(x => x.c) - a.acts.some(x => x.c)) || (b.acts[0].at - a.acts[0].at));
+    list = '<div class="scroll-x em-l24-list"><table class="tbl"><thead><tr><th>Contact</th><th>Did</th><th>Email</th><th>When</th></tr></thead><tbody>' +
+      ps.map(p => {
+        const c = D.conts[p.ci], a = p.acts[0], more = p.acts.length - 1;
+        return '<tr><td><a href="#" class="n" data-act="em-person" data-v="' + p.ci + '">' + esc(c.name || c.email) + '</a>' +
+          '<div class="tiny muted">' + esc(c.email) + '</div></td>' +
+          '<td>' + (p.acts.some(x => x.c) ? '<span class="pill ok">clicked</span>' : '<span class="pill info">opened</span>') + '</td>' +
+          '<td class="tiny"><div class="em-subj">' + esc(D.camps[E.ki[a.i]].subject) + '</div>' +
+            (more ? '<span class="muted">+ ' + more + ' more email' + (more === 1 ? '' : 's') + '</span>' : '') + '</td>' +
+          '<td class="tiny">' + esc(emStamp(a.at)) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  return '<div class="card" style="margin-bottom:16px">' + headH +
+    '<div class="st-legend"><span><i style="background:' + EM_BLUE + '"></i>Opened</span>' +
+    '<span><i style="background:' + EM_GREEN + '"></i>Clicked</span></div></div>' +
+    '<div class="card-b">' + stats + '<div style="margin-top:14px">' + chart + '</div></div>' +
+    '<div class="card-h"><div class="seg">' + seg('contacts', 'Contacts', nPeople) + seg('campaigns', 'Emails', camps.size) + '</div>' +
+    '<div class="spacer"></div><span class="tiny muted">clickers first, then most recent</span></div>' + list + '</div>';
+}
+
+/* ------------------------------------------------------------ bounces + unsubscribes
+   Failed sends come split by the receiving server's reply (sync: failKind):
+     h hard bounce - the address does not exist; never send to it again
+     q soft bounce - full inbox, temporary; may deliver next time
+     k blocked     - refused as spam / by policy; a sender-reputation signal
+     t throttled   - we sent too fast: the provider or GHL's sending limit refused it
+     f other
+   Unsubscribes are contacts with email Do-Not-Disturb, the reason GHL stored,
+   and the date from their activity log. Each is pinned to the last email the
+   person received before it - the one that tipped them over.             */
+const C_H = 'h'.charCodeAt(0), C_Q = 'q'.charCodeAt(0), C_K = 'k'.charCodeAt(0), C_T = 't'.charCodeAt(0);
+function emFailed(s) { return s === C_F || s === C_H || s === C_Q || s === C_K || s === C_T; }
+const EM_FAIL = { t: 'Throttled: sent too fast / sending limit', q: 'Soft bounce: full inbox', h: 'Hard bounce: address does not exist',
+  k: 'Blocked: spam filter / reputation', f: 'Other failure' };
+const EM_UNSUB = {
+  n: 'No longer wants these emails', l: 'Clicked the unsubscribe link', p: 'Provider: permanent bounce / spam',
+  s: 'Marked as spam', x: 'Never signed up', m: 'Other / set by staff'
+};
+const EM_RED = '#c0392b', EM_AMBER = '#b8860b';
+
+/** build the per-contact facts the health and fatigue views need (once, at load) */
+function emDecodeHealth(D) {
+  const E = D.E, n = E.n, nc = D.conts.length;
+  const byC = Array.from({ length: nc }, () => []);
+  for (let i = 0; i < n; i++) byC[E.ci[i]].push(i);
+  E.prior7 = new Uint8Array(n);        /* emails this contact got in the 7 days before this one */
+  E.unsubEv = new Uint8Array(n);       /* the email after which they unsubscribed */
+  E.afterUnsub = new Uint8Array(n);    /* sent more than a day after they unsubscribed */
+  E.afterHard = new Uint8Array(n);     /* sent to an address that had already hard-bounced */
+  byC.forEach((list, ci) => {
+    list.sort((x, y) => E.sent[x] - E.sent[y]);
+    let lo = 0;
+    for (let j = 0; j < list.length; j++) {
+      while (E.sent[list[j]] - E.sent[list[lo]] > 7 * 86400) lo++;
+      E.prior7[list[j]] = Math.min(255, j - lo);
+    }
+    const ua = D.conts[ci].unsubAt;
+    if (ua) {
+      let last = -1;
+      for (const i of list) { if (E.sent[i] <= ua) last = i; else if (E.sent[i] > ua + 86400) E.afterUnsub[i] = 1; }
+      if (last >= 0) E.unsubEv[last] = 1;
+    }
+    let hardAt = 0;
+    for (const i of list) {
+      if (hardAt && E.sent[i] > hardAt) E.afterHard[i] = 1;
+      if (!hardAt && E.st[i] === C_H) hardAt = E.sent[i];
+    }
+  });
+}
+
+/** everything list-health, over the current selection */
+function emHealthStats(sel) {
+  const D = emData, E = D.E;
+  const h = { sent: sel.idx.length, fail: { t: 0, h: 0, q: 0, k: 0, f: 0 }, tDays: new Map(), failed: 0, unsub: 0, uReason: {}, months: new Map(),
+    camps: new Map(), afterUnsub: 0, afterUnsubPeople: new Set(), afterHard: 0, afterHardPeople: new Set(), spam: 0 };
+  for (const i of sel.idx) {
+    const s = E.st[i], ci = E.ci[i];
+    const mo = emDayIso(E.day[i]).slice(0, 7);
+    let m = h.months.get(mo);
+    if (!m) { m = { n: 0, f: 0, hb: 0, u: 0 }; h.months.set(mo, m); }
+    m.n++;
+    let k = h.camps.get(E.ki[i]);
+    if (!k) { k = { ki: E.ki[i], n: 0, f: 0, u: 0 }; h.camps.set(E.ki[i], k); }
+    k.n++;
+    if (emFailed(s)) {
+      h.failed++; m.f++; k.f++;
+      h.fail[String.fromCharCode(s)]++;
+      if (s === C_H) m.hb++;
+      if (s === C_T) h.tDays.set(E.day[i], (h.tDays.get(E.day[i]) || 0) + 1);
+    }
+    if (E.unsubEv[i]) {
+      h.unsub++; m.u++; k.u++;
+      const r = D.conts[ci].unsub || 'm';
+      h.uReason[r] = (h.uReason[r] || 0) + 1;
+      if (r === 's' || r === 'p') h.spam++;
+    }
+    if (E.afterUnsub[i]) { h.afterUnsub++; h.afterUnsubPeople.add(ci); }
+    if (E.afterHard[i]) { h.afterHard++; h.afterHardPeople.add(ci); }
+  }
+  return h;
+}
+
+/** monthly columns - one measure per chart, never two axes */
+function emMonthChart(months, val, fmt, tip, colour) {
+  const keys = [...months.keys()].sort();
+  if (keys.length < 2) return '<div class="tiny muted">Needs at least two months in the date range.</div>';
+  const vals = keys.map(k => val(months.get(k)));
+  const max = Math.max(...vals, 0.0001);
+  const W = 720, H = 160, L = 40, B = 22, T = 10, bw = (W - L) / keys.length;
+  const bars = keys.map((k, j) => {
+    const v = vals[j], hgt = (H - B - T) * v / max;
+    return '<g><title>' + esc(tip(k, months.get(k))) + '</title>' +
+      '<rect x="' + (L + j * bw + 1.5).toFixed(1) + '" y="' + (H - B - hgt).toFixed(1) + '" width="' + Math.max(2, bw - 3).toFixed(1) +
+      '" height="' + Math.max(0, hgt).toFixed(1) + '" rx="3" fill="' + colour + '"/>' +
+      '<rect x="' + (L + j * bw).toFixed(1) + '" y="' + T + '" width="' + bw.toFixed(1) + '" height="' + (H - B - T) + '" fill="transparent"/></g>';
+  }).join('');
+  const every = Math.max(1, Math.ceil(keys.length / 10));
+  const xl = keys.map((k, j) => (j % every === 0 ? '<text x="' + (L + j * bw + bw / 2).toFixed(1) + '" y="' + (H - 6) +
+    '" text-anchor="middle" class="em-ax">' + esc(new Date(k + '-01T12:00:00Z').toLocaleDateString('en-US', { month: 'short', year: '2-digit', timeZone: 'UTC' })) +
+    '</text>' : '')).join('');
+  const yl = '<text x="' + (L - 6) + '" y="' + (T + 8) + '" text-anchor="end" class="em-ax">' + esc(fmt(max)) + '</text>' +
+    '<text x="' + (L - 6) + '" y="' + (H - B) + '" text-anchor="end" class="em-ax">0</text>' +
+    '<line x1="' + L + '" x2="' + W + '" y1="' + (H - B) + '" y2="' + (H - B) + '" stroke="rgba(16,24,40,.12)"/>';
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="em-trend" role="img">' + yl + bars + xl + '</svg>';
+}
+
+function emHealthCard(h) {
+  const D = emData;
+  const del = h.sent - h.failed;
+  const fr = pct(h.failed, h.sent), hr = pct(h.fail.h, h.sent);
+  const per1k = (x, n) => (n ? Math.round(x / n * 10000) / 10 : 0);
+  const stat = (v, l, tone) => '<div class="' + (tone || '') + '"><b>' + v + '</b><span>' + l + '</span></div>';
+  const tone = (v, ok, warn) => (v <= ok ? 'ok' : v <= warn ? '' : 'bad');
+  const kpis = '<div class="em-cq">' +
+    stat(fr + '%', 'bounce / failure rate (' + h.failed.toLocaleString() + ')', tone(fr, 2, 5)) +
+    stat(hr + '%', 'hard bounces - dead addresses (' + h.fail.h.toLocaleString() + ')', tone(hr, 0.5, 2)) +
+    stat(pct(h.fail.t, h.sent) + '%', 'throttled - sent too fast (' + h.fail.t.toLocaleString() + ')', tone(pct(h.fail.t, h.sent), 0.5, 2)) +
+    stat(h.unsub.toLocaleString(), 'unsubscribed after these emails', '') +
+    stat(per1k(h.unsub, del) + '', 'unsubscribes per 1,000 delivered', tone(per1k(h.unsub, del), 2, 5)) +
+    stat(per1k(h.spam, del) + '', 'spam reports per 1,000 delivered', tone(per1k(h.spam, del), 1, 3)) +
+    '</div>';
+  const reasons = (obj, names, total, colour) => '<div class="wb-bars">' + Object.keys(names).filter(k => obj[k])
+    .sort((a, b) => obj[b] - obj[a]).map(k => '<div class="wb-bar"><div class="wb-bl"><span>' + esc(names[k]) + '</span><b>' +
+      obj[k].toLocaleString() + '<i>' + Math.round(obj[k] / total * 100) + '%</i></b></div><div class="wb-track"><span style="width:' +
+      (obj[k] / total * 100).toFixed(1) + '%;background:' + colour + '"></span></div></div>').join('') + '</div>';
+  const topUnsub = [...h.camps.values()].filter(k => k.u && k.n >= 100)
+    .map(k => Object.assign(k, { r: per1k(k.u, k.n - k.f) })).sort((a, b) => b.r - a.r).slice(0, 8);
+  return '<div class="card" style="margin-top:16px"><div class="card-h"><h3>List health: bounces &amp; unsubscribes</h3><div class="spacer"></div>' +
+    '<button class="btn btn-sm btn-gold" data-act="em-analysis">Full analysis &amp; recommendations</button></div>' +
+    '<div class="card-b">' + kpis + '</div>' +
+    '<div class="two em-cq-two"><div class="card-b"><h4 class="em-h4">Bounce / failure rate by month</h4>' +
+      emMonthChart(h.months, m => (m.n ? m.f / m.n * 100 : 0), v => v.toFixed(1) + '%',
+        (k, m) => k + ': ' + m.f + ' of ' + m.n.toLocaleString() + ' failed (' + pct(m.f, m.n) + '%), ' + m.hb + ' hard bounces', EM_RED) +
+      (h.failed ? '<h4 class="em-h4" style="margin-top:14px">Why they failed</h4>' + reasons(h.fail, EM_FAIL, h.failed, EM_RED) : '') +
+    '</div><div class="card-b"><h4 class="em-h4">Unsubscribes by month</h4>' +
+      emMonthChart(h.months, m => m.u, v => String(Math.round(v)),
+        (k, m) => k + ': ' + m.u + ' unsubscribed (' + per1k(m.u, m.n) + ' per 1,000 sent)', EM_AMBER) +
+      (h.unsub ? '<h4 class="em-h4" style="margin-top:14px">What they said</h4>' + reasons(h.uReason, EM_UNSUB, h.unsub, EM_AMBER) : '') +
+    '</div></div>' +
+    (topUnsub.length ? '<div class="card-b"><h4 class="em-h4">Emails people unsubscribed after</h4>' +
+      '<div class="tiny muted">The last email each person received before unsubscribing. Sends with 100+ recipients, highest rate first.</div></div>' +
+      '<div class="scroll-x"><table class="tbl"><thead><tr><th>Email</th><th>Sent</th><th>Recipients</th><th>Unsubscribed</th><th>Per 1,000</th></tr></thead><tbody>' +
+      topUnsub.map(k => '<tr><td><a href="#" class="n" data-act="em-camp" data-v="' + k.ki + '">' + esc(D.camps[k.ki].subject) + '</a></td>' +
+        '<td class="tiny muted">' + esc(emDayLabel(D.camps[k.ki].day)) + '</td><td>' + k.n.toLocaleString() + '</td><td>' + k.u + '</td>' +
+        '<td><span class="pill ' + (k.r > 5 ? 'bad' : k.r > 2 ? 'warn' : 'ok') + '">' + k.r + '</span></td></tr>').join('') +
+      '</tbody></table></div>' : '') +
+    '</div>';
+}
+
+/* ------------------------------------------------------------ the analysis pop-up
+   Every number here is computed from the current filters; the verdicts compare
+   them with the thresholds mailbox providers and ESPs publish:
+     bounce < 2%            (most ESPs review accounts above ~5%)
+     spam reports < 0.1%    (Google/Yahoo bulk-sender rule: never above 0.3%)
+     unsubscribes < 0.5%    per send is typical for a healthy list           */
+function emAnalysis() {
+  const D = emData, E = D.E, sel = emSelect(), a = emAggregate(sel), rec = emRecommend(a), h = emHealthStats(sel);
+  const r = sel.range, bots = emF.bots;
+  const del = h.sent - h.failed;
+  const openRate = pct(a.opened, a.delivered), clickRate = pct(a.clicks, a.delivered);
+  const per1k = (x, n) => (n ? Math.round(x / n * 10000) / 10 : 0);
+  const verdict = (tone, text) => '<span class="pill ' + tone + '">' + text + '</span>';
+
+  /* frequency: how much does one more email this week cost? */
+  const FB = ['0', '1', '2', '3', '4-5', '6+'];
+  const fb = FB.map(k => ({ k, n: 0, o: 0, u: 0, f: 0 }));
+  for (const i of sel.idx) {
+    const p = E.prior7[i], b = fb[p >= 6 ? 5 : p >= 4 ? 4 : p];
+    b.n++; if (emIsOpen(E, i, bots)) b.o++; if (E.unsubEv[i]) b.u++; if (emFailed(E.st[i])) b.f++;
+  }
+  const fbr = fb.map(b => Object.assign(b, { or: pct(b.o, b.n - b.f), ur: per1k(b.u, b.n - b.f) }));
+  const lowF = fbr.filter((b, j) => j <= 1 && b.n >= 200), highF = fbr.filter((b, j) => j >= 3 && b.n >= 200);
+  const lowOR = lowF.length ? lowF.reduce((s, b) => s + b.o, 0) / lowF.reduce((s, b) => s + b.n - b.f, 0) * 100 : null;
+  const highOR = highF.length ? highF.reduce((s, b) => s + b.o, 0) / highF.reduce((s, b) => s + b.n - b.f, 0) * 100 : null;
+  const lowUR = lowF.length ? lowF.reduce((s, b) => s + b.u, 0) / lowF.reduce((s, b) => s + b.n - b.f, 0) * 1000 : null;
+  const highUR = highF.length ? highF.reduce((s, b) => s + b.u, 0) / highF.reduce((s, b) => s + b.n - b.f, 0) * 1000 : null;
+  const weeks = Math.max(1, (r.to - r.from + 1) / 7);
+  const perWeek = a.contacts.size ? Math.round(a.sent / a.contacts.size / weeks * 10) / 10 : 0;
+  const fatigue = lowOR != null && highOR != null ? (lowOR - highOR) / lowOR * 100 : null;
+
+  /* inactive: plenty of chances, never opened */
+  let inactive = 0, inactiveSends = 0;
+  a.people.forEach(p => { if (p.n >= 10 && p.o === 0) { inactive++; inactiveSends += p.n; } });
+
+  /* worst send slots, for "avoid" */
+  const slots = [];
+  for (let di = 0; di < 7; di++) for (let hh = 0; hh < 24; hh++) {
+    const n = a.sendN[di][hh];
+    if (n >= rec.minN) slots.push({ di, hh, n, r: a.sendO[di][hh] / n * 100, c: a.sendC[di][hh] / n * 100 });
+  }
+  slots.sort((x, y) => y.r - x.r);
+  const slotName = (s) => EM_DAYS[s.di] + ' ' + emHourLabel(s.hh).replace('a', ' AM').replace('p', ' PM');
+
+  /* ---------- recommendations, worst first ---------- */
+  const recs = [];
+  const fr = pct(h.failed, h.sent), hard = pct(h.fail.h, h.sent), spam1k = per1k(h.spam, del), un1k = per1k(h.unsub, del);
+  if (h.afterUnsubPeople.size) recs.push(['bad', '<b>' + h.afterUnsubPeople.size + ' people were emailed after they unsubscribed</b> (' +
+    h.afterUnsub.toLocaleString() + ' emails). That is a CAN-SPAM problem and the fastest route to spam reports. Check the bulk-action ' +
+    'lists: contacts with email DND must be excluded.']);
+  if (h.afterHardPeople.size) recs.push(['bad', '<b>' + h.afterHardPeople.size + ' addresses kept getting emails after a hard bounce</b> (' +
+    h.afterHard.toLocaleString() + ' sends). A hard bounce means the address does not exist; remove them - repeat bounces hurt delivery to everyone else.']);
+  if (h.fail.t > h.failed * 0.3 && h.fail.t >= 50) {
+    const worst = [...h.tDays.entries()].sort((x, y) => y[1] - x[1]).slice(0, 3)
+      .map(([d, n]) => emDayLabel(d) + ' (' + n.toLocaleString() + ')').join(', ');
+    recs.push(['bad', '<b>' + Math.round(h.fail.t / h.failed * 100) + '% of failed emails (' + h.fail.t.toLocaleString() +
+      ') were throttled - not bad addresses.</b> Microsoft refused too many connections at once, or the GHL/Mailgun sending limit for ' +
+      'phcinvest.com was hit, and the retries ran out. These people never got the email. Worst days: ' + worst + '. ' +
+      'Send big lists in batches (GHL bulk action: "send in batches", e.g. 200 every 10-15 minutes) instead of all at once, and resend to the throttled contacts.']);
+  }
+  const realBounce = pct(h.fail.h + h.fail.q + h.fail.k + h.fail.f, h.sent);
+  if (realBounce > 2) recs.push([realBounce > 5 ? 'bad' : 'warn', 'Bounce rate (not counting throttling) is <b>' + realBounce + '%</b> (aim under 2%): ' +
+    h.fail.h.toLocaleString() + ' hard, ' + h.fail.q.toLocaleString() + ' soft, ' + h.fail.k.toLocaleString() + ' blocked. Clean the hard bounces; verify new lists before importing.']);
+  if (h.fail.k > h.failed * 0.25 && h.fail.k > 20) recs.push(['warn', '<b>' + h.fail.k.toLocaleString() + ' emails were blocked as spam or by policy.</b> ' +
+    'That points at sender reputation or content, not bad addresses - check SPF/DKIM/DMARC on the sending domain and tone down sales-heavy subject lines.']);
+  if (spam1k > 1) recs.push([spam1k > 3 ? 'bad' : 'warn', 'Spam reports run at <b>' + spam1k + ' per 1,000</b> (Google and Yahoo want under 1, and block above 3).']);
+  if (fatigue != null && fatigue > 15) recs.push(['warn', '<b>Sending too often.</b> Contacts who already had 3+ emails that week open ' +
+    highOR.toFixed(1) + '% of the time, against ' + lowOR.toFixed(1) + '% for those who had 0-1 - ' + Math.round(fatigue) + '% fewer opens' +
+    (highUR != null && lowUR != null && highUR > lowUR ? ', and they unsubscribe ' + (highUR / Math.max(lowUR, 0.01)).toFixed(1) + 'x as often' : '') +
+    '. Cap at about 2 emails per contact per week.']);
+  else if (fatigue != null) recs.push(['ok', 'No sign of email fatigue yet: open rates hold up when contacts get several emails in a week (' +
+    lowOR.toFixed(1) + '% vs ' + highOR.toFixed(1) + '%).']);
+  if (inactive) recs.push(['warn', '<b>' + inactive.toLocaleString() + ' contacts got 10+ emails and never opened one</b> (' +
+    inactiveSends.toLocaleString() + ' emails). Send them one re-engagement email, then stop emailing those who still do not open - it lifts open rates and protects the domain.']);
+  if (h.uReason.x) recs.push(['warn', '<b>' + h.uReason.x + ' people said they never signed up.</b> Find which list or form they came from - that source is adding people without consent.']);
+  if (rec.best) recs.push(['ok', '<b>Send on ' + slotName({ di: rec.best.di, hh: rec.best.h }) + ' CT.</b> Emails sent then were opened ' +
+    pct(rec.best.o, rec.best.n) + '% of the time against ' + openRate + '% overall (' + rec.best.n.toLocaleString() + ' emails).']);
+  if (un1k <= 5 && fr <= 2 && spam1k <= 1) recs.push(['ok', 'Deliverability looks healthy: bounces ' + fr + '%, unsubscribes ' + un1k + ' and spam reports ' + spam1k + ' per 1,000.']);
+
+  const fbTable = '<table class="tbl"><thead><tr><th>Emails that contact had in the previous 7 days</th><th>Emails</th><th>Open rate</th><th>Unsubscribes per 1,000</th></tr></thead><tbody>' +
+    fbr.filter(b => b.n).map(b => '<tr><td>' + b.k + '</td><td>' + b.n.toLocaleString() + '</td><td><b>' + b.or + '%</b></td><td>' + b.ur + '</td></tr>').join('') +
+    '</tbody></table>';
+  const slotTable = (list) => '<table class="tbl"><thead><tr><th>Send time (CT)</th><th>Emails</th><th>Open rate</th><th>Click rate</th></tr></thead><tbody>' +
+    list.map(s => '<tr><td>' + slotName(s) + '</td><td>' + s.n.toLocaleString() + '</td><td><b>' + s.r.toFixed(1) + '%</b></td><td>' + s.c.toFixed(1) + '%</td></tr>').join('') +
+    '</tbody></table>';
+
+  const sec = (t, body) => '<div class="em-an-sec"><h4>' + t + '</h4>' + body + '</div>';
+  openModal({
+    title: 'Email analysis & recommendations',
+    wide: true,
+    body: '<div class="tiny muted" style="margin-bottom:12px">' + esc(emDayLabel(r.from)) + ' &ndash; ' + esc(emDayLabel(r.to)) + ' &middot; ' +
+      a.sent.toLocaleString() + ' emails to ' + a.contacts.size.toLocaleString() + ' contacts &middot; uses the filters on the page' +
+      (bots ? '' : ' &middot; scanner clicks left out') + '</div>' +
+      '<div class="em-an">' +
+      sec('What to do', '<ul class="em-recs">' + recs.map(x => '<li class="' + x[0] + '">' + x[1] + '</li>').join('') + '</ul>') +
+      sec('When to send', (slots.length
+        ? '<div class="em-an-two"><div><div class="tiny muted">Best send times (each with ' + rec.minN.toLocaleString() + '+ emails)</div>' + slotTable(slots.slice(0, 5)) +
+          '</div><div><div class="tiny muted">Weakest send times</div>' + slotTable(slots.slice(-3).reverse()) + '</div></div>' +
+          '<p class="tiny">Best day overall: <b>' + (rec.days[0] ? rec.days[0].k + ' (' + rec.days[0].rate + '%)' : '-') + '</b> &middot; best hour: <b>' +
+          (rec.hours[0] ? emHourLabel(rec.hours[0].h) + ' (' + rec.hours[0].rate + '%)' : '-') + '</b>' +
+          (rec.peak && rec.peak.v ? ' &middot; people read most on <b>' + EM_DAYS[rec.peak.di] + ' ' + emHourLabel(rec.peak.h) + '&ndash;' + emHourLabel((rec.peak.h + 2) % 24) + '</b>' : '') + '.</p>'
+        : '<p class="tiny muted">Not enough emails in this range to rank send times - widen the dates.</p>')) +
+      sec('Are we sending too many?', '<p>Each contact gets about <b>' + perWeek + ' emails a week</b> in this range. ' +
+        (fatigue == null ? 'Not enough data to measure fatigue.' : fatigue > 15
+          ? verdict('warn', 'fatigue: ' + Math.round(fatigue) + '% fewer opens') + ' when a contact already had 3+ that week.'
+          : verdict('ok', 'no clear fatigue') + ' - opens hold up with more emails per week.') + '</p>' + fbTable) +
+      sec('Bounces', '<p>' + verdict(fr <= 2 ? 'ok' : fr <= 5 ? 'warn' : 'bad', fr + '% bounced') + ' ' + h.failed.toLocaleString() + ' of ' + h.sent.toLocaleString() +
+        ' emails failed: <b>' + h.fail.t + '</b> throttled (sent too fast - our side), <b>' + h.fail.h + '</b> hard (dead address), <b>' + h.fail.q +
+        '</b> soft (full inbox), <b>' + h.fail.k + '</b> blocked (spam filter / reputation), <b>' + h.fail.f + '</b> other. ' +
+        'Real bounces, leaving out throttling: <b>' + pct(h.fail.h + h.fail.q + h.fail.k + h.fail.f, h.sent) + '%</b> (benchmark: under 2%).</p>' +
+        (h.afterHardPeople.size ? '<p>' + verdict('bad', h.afterHardPeople.size + ' dead addresses still emailed') + '</p>' : '')) +
+      sec('Unsubscribes', '<p>' + verdict(un1k <= 2 ? 'ok' : un1k <= 5 ? 'warn' : 'bad', un1k + ' per 1,000') + ' ' + h.unsub + ' people unsubscribed after these emails; ' +
+        h.spam + ' of them through a spam report (' + spam1k + ' per 1,000 - keep it under 1).</p>' +
+        '<div class="wb-bars">' + Object.keys(EM_UNSUB).filter(k => h.uReason[k]).sort((x, y) => h.uReason[y] - h.uReason[x]).map(k =>
+          '<div class="wb-bar"><div class="wb-bl"><span>' + EM_UNSUB[k] + '</span><b>' + h.uReason[k] + '<i>' + Math.round(h.uReason[k] / h.unsub * 100) + '%</i></b></div>' +
+          '<div class="wb-track"><span style="width:' + (h.uReason[k] / h.unsub * 100).toFixed(1) + '%;background:' + EM_AMBER + '"></span></div></div>').join('') + '</div>' +
+        (h.afterUnsubPeople.size ? '<p>' + verdict('bad', h.afterUnsubPeople.size + ' people emailed after unsubscribing') + '</p>' : '')) +
+      sec('Engagement', '<p>Opened <b>' + openRate + '%</b> &middot; clicked <b>' + clickRate + '%</b> &middot; click-to-open <b>' + pct(a.clicks, a.opened) + '%</b>' +
+        ' &middot; ' + a.openers.size.toLocaleString() + ' people opened at least one, ' + a.clickers.size.toLocaleString() + ' clicked. ' +
+        inactive.toLocaleString() + ' contacts had 10+ emails and opened none.</p>') +
+      '</div>',
+    footer: '<button class="btn" data-act="modal-close">Close</button>'
+  });
+}
+
+/* ------------------------------------------------------------ campaign picker
+   Search + tick several. Typing filters the list in place (no repaint); a
+   tick repaints the page with the panel left open where it was.         */
+let emPickOpen = false, emPickQ = '';
+function emPicker(r) {
+  const D = emData, E = D.E;
+  const counts = new Map();
+  for (let i = 0; i < E.n; i++) {
+    const d = E.day[i];
+    if (d >= r.from && d <= r.to) counts.set(E.ki[i], (counts.get(E.ki[i]) || 0) + 1);
+  }
+  const chosen = new Set(emF.camps);
+  const list = [...counts.keys()].concat(emF.camps.filter(k => !counts.has(k)))
+    .map(ki => ({ ki, c: D.camps[ki], n: counts.get(ki) || 0 }))
+    .sort((x, y) => (chosen.has(y.ki) - chosen.has(x.ki)) || (y.c.day - x.c.day) || (y.n - x.n));
+  const label = !emF.camps.length ? 'All emails (' + counts.size + ')'
+    : emF.camps.length === 1 ? D.camps[emF.camps[0]].subject : emF.camps.length + ' emails selected';
+  const q = emPickQ.toLowerCase();
+  return '<div class="wb-f em-pick"><span>Emails / campaigns</span>' +
+    '<button class="inp sort-sel em-pick-btn" data-act="em-pick" title="' + esc(label) + '">' + esc(label) + ' <span class="wb-caret">&#9662;</span></button>' +
+    (emPickOpen ? '<div class="em-pick-panel">' +
+      '<input class="inp" data-empick="q" placeholder="Search subjects..." value="' + esc(emPickQ) + '">' +
+      '<div class="em-pick-act"><button class="btn btn-sm" data-act="em-pick-shown">Select shown</button>' +
+        '<button class="btn btn-sm" data-act="em-pick-none">Clear</button>' +
+        '<span class="tiny muted">' + emF.camps.length + ' selected</span>' +
+        '<button class="btn btn-sm btn-gold" data-act="em-pick-done">Done</button></div>' +
+      '<div class="em-pick-list">' + list.map(x => {
+        const txt = (emDayIso(x.c.day) + ' ' + x.c.subject).toLowerCase();
+        return '<label class="em-pick-row"' + (q && txt.indexOf(q) < 0 ? ' hidden' : '') + ' data-txt="' + esc(txt) + '">' +
+          '<input type="checkbox" data-empick-cb="' + x.ki + '"' + (chosen.has(x.ki) ? ' checked' : '') + '>' +
+          '<span class="em-pick-d">' + emDayIso(x.c.day) + '</span><span class="em-pick-s">' + esc(x.c.subject) + '</span>' +
+          '<i>' + x.n.toLocaleString() + '</i></label>';
+      }).join('') + '</div></div>' : '') +
+  '</div>';
+}
+function emPickFilterDom() {
+  const q = emPickQ.toLowerCase();
+  document.querySelectorAll('.em-pick-row').forEach(row => { row.hidden = !!q && row.dataset.txt.indexOf(q) < 0; });
+}
+
 /** everything one contact has been sent, newest first */
 function emPerson(ci) {
   const D = emData, E = D.E, c = D.conts[ci];
@@ -746,14 +1175,16 @@ function emPerson(ci) {
 function emCsv() {
   const D = emData, E = D.E, sel = emSelect();
   const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-  const st = (i) => (E.bot[i] ? 'scanner click' : ({ c: 'clicked', o: 'opened', d: 'delivered', f: 'failed', s: 'sent' })[String.fromCharCode(E.st[i])] || 'other');
-  const lines = [['sent_at_central', 'subject', 'source', 'name', 'email', 'status', 'opened', 'clicked', 'last_open_or_click_central', 'first_ever_open']
+  const st = (i) => (E.bot[i] ? 'scanner click' : ({ c: 'clicked', o: 'opened', d: 'delivered', f: 'failed', h: 'hard bounce', q: 'soft bounce', k: 'blocked', t: 'throttled', s: 'sent' })[String.fromCharCode(E.st[i])] || 'other');
+  const lines = [['sent_at_central', 'subject', 'source', 'name', 'email', 'status', 'opened', 'clicked', 'last_open_or_click_central', 'first_ever_open',
+    'unsubscribed', 'unsubscribe_reason', 'unsubscribed_after_this_email']
     .map(q).join(',')];
   sel.idx.forEach(i => {
     const c = D.conts[E.ci[i]], k = D.camps[E.ki[i]], fo = D.firstOpen[E.ci[i]];
     lines.push([emStamp(E.sent[i]), k.subject, k.source, c.name, c.email, st(i),
       emIsOpen(E, i, emF.bots) ? 'yes' : 'no', emIsClick(E, i, emF.bots) ? 'yes' : 'no',
-      E.dl[i] >= 0 ? emStamp(E.sent[i] + E.dl[i]) : '', fo !== 0x7fffffff ? emDayIso(fo) : ''].map(q).join(','));
+      E.dl[i] >= 0 ? emStamp(E.sent[i] + E.dl[i]) : '', fo !== 0x7fffffff ? emDayIso(fo) : '',
+      c.unsubAt ? emStamp(c.unsubAt) : (c.unsub ? 'yes' : ''), c.unsub ? EM_UNSUB[c.unsub] || '' : '', E.unsubEv[i] ? 'yes' : ''].map(q).join(','));
   });
   const blob = new Blob([lines.join('\r\n')], { type: 'text/csv' });
   const a = document.createElement('a');
@@ -775,12 +1206,21 @@ document.addEventListener('click', e => {
   const v = t.dataset.v;
   switch (t.dataset.act) {
     case 'em-reload': emData = null; emError = null; emLoad(true); return;
-    case 'em-clear': emF = { preset: '90', from: '', to: '', camp: 'all', source: 'all', status: 'all', audience: 'all', q: '', bots: false }; emShow = 200; emRerender(); return;
+    case 'em-clear': emF = { preset: '90', from: '', to: '', camps: [], source: 'all', status: 'all', audience: 'all', q: '', bots: false }; emPickQ = ''; emShow = 200; emRerender(); return;
     case 'em-tab': emPeopleView = v; emShow = 200; emRerender(); return;
     case 'em-more': emShow += 300; emRerender(); return;
-    case 'em-camp': emF.camp = v; emPeopleView = 'contacts'; emShow = 200; render(); return;
+    case 'em-camp': closeModal(); emF.camps = [Number(v)]; emPeopleView = 'contacts'; emShow = 200; render(); return;
     case 'em-person': emPerson(Number(v)); return;
     case 'em-csv': emCsv(); return;
+    case 'em-l24': emL24 = v; emRerender(); return;
+    case 'em-analysis': emAnalysis(); return;
+    case 'em-pick': emPickOpen = !emPickOpen; emRerender(); return;
+    case 'em-pick-done': emPickOpen = false; emRerender(); return;
+    case 'em-pick-none': emF.camps = []; emShow = 200; emRerender(); return;
+    case 'em-pick-shown': {
+      const add = [...document.querySelectorAll('.em-pick-row:not([hidden]) [data-empick-cb]')].map(x => Number(x.dataset.empickCb));
+      emF.camps = [...new Set(emF.camps.concat(add))]; emShow = 200; emRerender(); return;
+    }
   }
 });
 
@@ -798,6 +1238,27 @@ function emOnField(el) {
   emShow = 200;
   emRerender();
 }
+/* the picker: a tick repaints, keeping the panel's search and scroll */
+document.addEventListener('change', e => {
+  const el = e.target;
+  if (!(el.dataset && el.dataset.empickCb != null)) return;
+  const k = Number(el.dataset.empickCb);
+  emF.camps = el.checked ? [...new Set(emF.camps.concat(k))] : emF.camps.filter(x => x !== k);
+  emShow = 200;
+  const box = document.querySelector('.em-pick-list'), top = box ? box.scrollTop : 0;
+  emRerender();
+  const nb = document.querySelector('.em-pick-list'); if (nb) nb.scrollTop = top;
+});
+document.addEventListener('input', e => {
+  const el = e.target;
+  if (el.dataset && el.dataset.empick === 'q') { emPickQ = el.value; emPickFilterDom(); }
+});
+/* click outside the open panel closes it */
+document.addEventListener('click', e => {
+  if (!emPickOpen || e.target.closest('.em-pick')) return;
+  emPickOpen = false;
+  const pnl = document.querySelector('.em-pick-panel'); if (pnl) pnl.remove();
+});
 document.addEventListener('change', e => {
   const el = e.target;
   if (el.dataset && el.dataset.emf && el.dataset.emf !== 'q') emOnField(el);

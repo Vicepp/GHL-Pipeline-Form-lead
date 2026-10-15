@@ -806,3 +806,35 @@ body{
 .em-stack>span{border-radius:99px}
 .em-cq-two{gap:0;border-top:1px solid rgba(16,24,40,.06);border-bottom:1px solid rgba(16,24,40,.06)}
 @media(max-width:900px){.em-cq{grid-template-columns:repeat(2,1fr)}}
+
+/* email: last 24 hours */
+.em-l24{grid-template-columns:repeat(5,1fr)}
+.em-l24-list{max-height:420px;overflow-y:auto}
+.em-l24-list thead th{position:sticky;top:0;background:var(--surface);z-index:1}
+
+/* email: campaign picker */
+.em-pick{position:relative}
+.em-pick-btn{max-width:300px;min-width:200px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.em-pick-panel{position:absolute;top:100%;left:0;z-index:30;margin-top:6px;width:min(560px,92vw);background:var(--surface);
+  border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow-lg);padding:10px}
+.em-pick-act{display:flex;align-items:center;gap:8px;margin:8px 0}
+.em-pick-act .btn-gold{margin-left:auto}
+.em-pick-list{max-height:340px;overflow-y:auto;border-top:1px solid var(--line)}
+.em-pick-row{display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid rgba(16,24,40,.05);cursor:pointer;font-size:12.5px}
+.em-pick-row:hover{background:rgba(200,160,74,.07)}
+.em-pick-row[hidden]{display:none}
+.em-pick-d{color:var(--text-3);font-variant-numeric:tabular-nums;white-space:nowrap}
+.em-pick-s{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.em-pick-row i{font-style:normal;color:var(--text-3);font-size:11px}
+/* email: analysis pop-up */
+.em-an-sec{padding:14px 0;border-top:1px solid var(--line)}
+.em-an-sec:first-child{border-top:0;padding-top:0}
+.em-an-sec h4{font-size:14px;margin-bottom:8px}
+.em-an-sec p{margin:8px 0;font-size:13px}
+.em-an-two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.em-recs{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+.em-recs li{padding:10px 12px;border-radius:10px;font-size:13px;border-left:4px solid}
+.em-recs li.bad{background:var(--bad-bg);border-color:var(--bad)}
+.em-recs li.warn{background:var(--warn-bg);border-color:var(--warn)}
+.em-recs li.ok{background:var(--ok-bg);border-color:var(--ok)}
+@media(max-width:760px){.em-an-two{grid-template-columns:1fr}}
