@@ -377,7 +377,8 @@ function viewEmailCampaigns() {
   const head = title('Email Campaigns', emMeta
     ? 'GoHighLevel campaign &amp; bulk emails &middot; synced ' + esc(ago(emMeta.syncedAt)) + ' &middot; Central time'
     : 'GoHighLevel campaign &amp; bulk emails') +
-    (emData ? '<button class="btn btn-sm" data-act="em-csv">Export CSV</button>' : '') +
+    (emData ? '<a class="btn btn-sm btn-gold" href="#/email/24h">Last 24 hours</a>' +
+      '<button class="btn btn-sm" data-act="em-csv">Export CSV</button>' : '') +
     '<button class="btn btn-sm" data-act="em-reload">Reload</button>';
 
   if (emError === 'local') {
@@ -433,7 +434,7 @@ function viewEmailCampaigns() {
     '</div></div>';
 
   if (!sel.idx.length) {
-    shell('email', head, banner + emLast24() + filters + '<div class="card"><div class="empty">No emails match these filters.</div></div>');
+    shell('email', head, banner + filters + '<div class="card"><div class="empty">No emails match these filters.</div></div>');
     return;
   }
 
@@ -589,7 +590,7 @@ function viewEmailCampaigns() {
 
   const y = window.scrollY;
   shell('email', head,
-    banner + emLast24() + filters + tiles +
+    banner + filters + tiles +
     '<div class="two dash-mid"><div>' + emTrend(a, r) + '</div><div>' + recCard + '</div></div>' +
     '<div class="two em-heats"><div>' + heatEngage + '</div><div>' + heatSend + '</div></div>' +
     '<div class="two" style="margin-top:16px"><div>' + dayBars + hourBars + '</div><div>' + lagBars + '</div></div>' +
@@ -727,6 +728,27 @@ function emClickQuality(a) {
   return head + '<div class="two em-cq-two"><div>' + speedCard + '</div><div>' + kindCard + '</div></div>' + domCard + whoCard;
 }
 
+/** #/email/24h - the last-24-hours view on a page of its own */
+function viewEmail24h() {
+  if (!emData && !emLoading && !emError) emLoad();
+  const head = title('Last 24 hours', emMeta
+    ? 'Who opened or clicked, and on which email &middot; synced ' + esc(ago(emMeta.syncedAt)) + ' &middot; Central time'
+    : 'Who opened or clicked, and on which email') +
+    '<a class="btn btn-sm" href="#/email">&larr; Email Campaigns</a>' +
+    '<button class="btn btn-sm" data-act="em-reload">Reload</button>';
+  if (!emData) {
+    shell('email', head, '<div class="card"><div class="empty">' + (emError
+      ? (emError === 'local' ? 'Email analytics needs the live database.' : emError === 'empty' ? 'No email data has been synced yet.' : 'Could not load email data.<br><span class="tiny muted">' + esc(emError) + '</span>')
+      : 'Loading email history&hellip;') + '</div></div>');
+    return;
+  }
+  const y = window.scrollY;
+  shell('email', head, emLast24() +
+    '<div class="tiny muted">Refreshed every 2 hours by the scheduled sync. Scanner clicks are ' +
+    (emF.bots ? 'included' : 'left out') + ' (change it on the Email Campaigns page).</div>');
+  if (emKeepScroll) window.scrollTo(0, y);
+}
+
 /* ------------------------------------------------------------ last 24 hours
    Who opened or clicked, and on which email, in the 24 hours up to the
    last sync. Anchored to the sync - not to "now" - because nothing after
@@ -760,7 +782,7 @@ function emLast24() {
   }
   const syncTxt = emStamp(end);
   const headH = '<div class="card-h"><h3>Last 24 hours</h3><span class="tiny muted">up to the last sync, ' + esc(syncTxt) +
-    ' CT &middot; not affected by the filters below</span><div class="spacer"></div>';
+    ' CT</span><div class="spacer"></div>';
   if (!opens) {
     return '<div class="card" style="margin-bottom:16px">' + headH + '</div><div class="empty">No opens or clicks in the 24 hours before the last sync.</div></div>';
   }
@@ -1209,7 +1231,10 @@ document.addEventListener('click', e => {
     case 'em-clear': emF = { preset: '90', from: '', to: '', camps: [], source: 'all', status: 'all', audience: 'all', q: '', bots: false }; emPickQ = ''; emShow = 200; emRerender(); return;
     case 'em-tab': emPeopleView = v; emShow = 200; emRerender(); return;
     case 'em-more': emShow += 300; emRerender(); return;
-    case 'em-camp': closeModal(); emF.camps = [Number(v)]; emPeopleView = 'contacts'; emShow = 200; render(); return;
+    case 'em-camp':
+      closeModal(); emF.camps = [Number(v)]; emPeopleView = 'contacts'; emShow = 200;
+      if (location.hash.indexOf('#/email/24h') === 0) location.hash = '#/email'; else render();
+      return;
     case 'em-person': emPerson(Number(v)); return;
     case 'em-csv': emCsv(); return;
     case 'em-l24': emL24 = v; emRerender(); return;

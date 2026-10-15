@@ -838,3 +838,4 @@ body{
 .em-recs li.warn{background:var(--warn-bg);border-color:var(--warn)}
 .em-recs li.ok{background:var(--ok-bg);border-color:var(--ok)}
 @media(max-width:760px){.em-an-two{grid-template-columns:1fr}}
+.em-l24-list{max-height:none}

@@ -1,7 +1,7 @@
 /* Pheenyx Capital - Pipeline Workflow
    app.js : routing, views, interactions.  Started by boot.js.
 
-   Routes: #/dashboard #/email #/pipelines #/pipeline/<id> #/forms #/forms/<id|new>
+   Routes: #/dashboard #/email[/24h] #/pipelines #/pipeline/<id> #/forms #/forms/<id|new>
            #/contacts #/settings        (all require a signed-in team member)
            #/f/<formId>                 (public form - no login, ever)        */
 
@@ -3118,7 +3118,7 @@ function render() {
       else if (webinarsView() === 'analytics') viewWebinarsAnalytics();
       else viewWebinarsMap();
       break;
-    case 'email': viewEmailCampaigns(); break;
+    case 'email': if (parts[1] === '24h') viewEmail24h(); else viewEmailCampaigns(); break;
     case 'pipelines': viewPipelines(); break;
     case 'pipeline': viewBoard(parts[1]); break;
     case 'forms':
