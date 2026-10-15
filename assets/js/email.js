@@ -401,7 +401,9 @@ function viewEmailCampaigns() {
   const r = sel.range;
 
   /* ---------- sync banner ---------- */
-  const partial = emMeta && (!emMeta.complete || emMeta.statusChecked < emMeta.emails);
+  /* only while emails are genuinely missing a status - every run's first upload is marked
+     incomplete, which would otherwise flash this banner for a few minutes every 2 hours */
+  const partial = emMeta && emMeta.statusChecked < emMeta.emails;
   const banner = partial
     ? '<div class="em-banner"><b>Sync still running.</b> Live open/click status is in for ' +
       (emMeta.statusChecked || 0).toLocaleString() + ' of ' + (emMeta.emails || 0).toLocaleString() +
@@ -412,7 +414,7 @@ function viewEmailCampaigns() {
 
   const sources = [...new Set(D.camps.map(c => c.source))];
   const filters =
-    '<div class="card" style="margin-bottom:16px"><div class="card-b wb-filters">' +
+    '<div class="card em-filters" style="margin-bottom:16px"><div class="card-b wb-filters">' +
       emSel('preset', 'Date range', [['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 90 days'], ['180', 'Last 6 months'],
         ['365', 'Last 12 months'], ['ytd', 'This year'], ['all', 'All time'], ['custom', 'Custom dates']], emF.preset) +
       '<label class="wb-f"><span>From</span><input type="date" class="inp sort-sel" data-emf="from" value="' + emDayIso(r.from) +

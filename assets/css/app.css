@@ -839,3 +839,9 @@ body{
 .em-recs li.ok{background:var(--ok-bg);border-color:var(--ok)}
 @media(max-width:760px){.em-an-two{grid-template-columns:1fr}}
 .em-l24-list{max-height:none}
+/* the filter card holds the campaign picker: every .card has backdrop-filter, so each
+   is its own stacking layer - lift this one so the open panel sits over the cards below */
+.em-filters{position:relative;z-index:15}   /* above the cards (auto), below the sticky topbar (20) */
+/* a half-width heatmap must scroll inside its card, never widen the page */
+.em-heats>div,.em-cq-two>div{min-width:0}
+.em-hrow{grid-template-columns:30px repeat(24,minmax(12px,1fr))}
