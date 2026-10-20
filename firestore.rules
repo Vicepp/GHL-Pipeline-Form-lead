@@ -132,6 +132,22 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    /* ---- calendly: written only by tools/calendly-sync.js ---------- */
+    /* bookings, invitees and recaps/transcripts of calls with outsiders */
+    match /calendlyAnalytics/{id} {
+      allow read: if isTeam();
+      allow write: if false;
+    }
+    /* internal meetings (every attendee @phcinvest.com) - check-ins,
+       standups, bonus talks. Leaders only. Add an email to let someone in. */
+    function calendlyLeaders() {
+      return ['nkem@phcinvest.com'];
+    }
+    match /calendlyPrivate/{id} {
+      allow read: if isOwner() || (isTeam() && email() in calendlyLeaders());
+      allow write: if false;
+    }
+
     /* anything not named above is closed */
     match /{document=**} {
       allow read, write: if false;

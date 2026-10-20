@@ -8,9 +8,12 @@
 #     powershell -ExecutionPolicy Bypass -File tools\install-schedule.ps1
 #     powershell -ExecutionPolicy Bypass -File tools\install-schedule.ps1 -Remove
 #
-# Creates two Windows scheduled tasks, both pointing at this copy of the repo:
+# Creates Windows scheduled tasks, all pointing at this copy of the repo:
 #   PHC GHL Email Sync           daily 6:00 AM - new emails + re-check 90 days (~2 h)
 #   PHC GHL Email Sync (recent)  every 2 hours - re-check the last 3 days (~5 min)
+#   PHC Calendly Sync            daily 5:30 AM - full Calendly history + archive check (~5 min)
+#   PHC Calendly Sync (live)     every 15 min  - new bookings, cancels, recaps (~1 min)
+#                                (only if CALENDLY_TOKEN is in .env.local)
 # If the computer is off at a start time, the task runs once it is back on.
 # A lock file stops two runs overlapping.
 #
@@ -26,9 +29,12 @@ $root  = Split-Path -Parent $PSScriptRoot
 $cmd   = Join-Path $PSScriptRoot 'ghl-email-sync.cmd'
 $daily = 'PHC GHL Email Sync'
 $quick = 'PHC GHL Email Sync (recent)'
+$calCmd   = Join-Path $PSScriptRoot 'calendly-sync.cmd'
+$calDaily = 'PHC Calendly Sync'
+$calLive  = 'PHC Calendly Sync (live)'
 
 if ($Remove) {
-  foreach ($n in $daily, $quick) {
+  foreach ($n in $daily, $quick, $calDaily, $calLive) {
     if (Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue) {
       Unregister-ScheduledTask -TaskName $n -Confirm:$false
       Write-Host "removed: $n"
@@ -66,6 +72,18 @@ $t2 = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date.AddHours(7)) `
 Register-ScheduledTask -TaskName $quick -Action $a2 -Trigger $t2 -Settings $settings -Force `
   -Description 'Every 2 hours: re-check the last 3 days of GHL emails so "Last 24 hours" stays current.' | Out-Null
 
-Get-ScheduledTask -TaskName $daily, $quick | Get-ScheduledTaskInfo |
+if ($envText -match '(?m)^CALENDLY_TOKEN=\S+') {
+  $a3 = New-ScheduledTaskAction -Execute $calCmd -WorkingDirectory $root
+  $t3 = New-ScheduledTaskTrigger -Daily -At 5:30AM
+  Register-ScheduledTask -TaskName $calDaily -Action $a3 -Trigger $t3 -Settings $settings -Force `
+    -Description 'Daily Calendly sync for the Calendly Calls page: full history, archive anything Calendly dropped.' | Out-Null
+  $a4 = New-ScheduledTaskAction -Execute $calCmd -Argument '--recent' -WorkingDirectory $root
+  $t4 = New-ScheduledTaskTrigger -Once -At ((Get-Date).Date.AddMinutes(5)) `
+    -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650)
+  Register-ScheduledTask -TaskName $calLive -Action $a4 -Trigger $t4 -Settings $settings -Force `
+    -Description 'Every 15 minutes: new Calendly bookings, cancellations, recaps and transcripts.' | Out-Null
+}
+
+Get-ScheduledTask -TaskName 'PHC GHL Email Sync*', 'PHC Calendly Sync*' | Get-ScheduledTaskInfo |
   Select-Object TaskName, NextRunTime | Format-Table -AutoSize
 Write-Host "Installed. Log: $root\tools\.ghl-cache\sync.log"

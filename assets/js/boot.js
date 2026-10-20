@@ -141,8 +141,9 @@ function authMessage(code) {
     }
   };
 
-  /* one-off reads for pages that load a dataset rather than subscribe (Email Campaigns) */
-  window.FsRead = { fs, doc, getDoc };
+  /* reads for pages that load a dataset (Email Campaigns, Calendly); onSnapshot lets
+     the Calendly page notice a new sync and reload itself */
+  window.FsRead = { fs, doc, getDoc, onSnapshot };
 
   await window.Store.initFirebase({
     fs, doc, setDoc, updateDoc, deleteDoc, writeBatch, collection, onSnapshot

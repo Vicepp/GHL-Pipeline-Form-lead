@@ -87,6 +87,35 @@ The script checks all of that first and says what is missing. `-Remove` takes th
 
 **What the page reads besides opens and clicks.** Failed sends are split by the receiving server's reply - *throttled* (sent too fast / sending limit hit: our side), *hard* (address does not exist), *soft* (full inbox), *blocked* (spam filter / reputation). Unsubscribes come from each contact's email Do-Not-Disturb setting and the reason they gave, dated from their conversation's activity log and pinned to the last email they got before it.
 
+## Calendly Calls page
+
+`#/calendly` - every Calendly booking, who booked it and what they answered, cancels and
+reschedules, and each recorded call's Notetaker summary, action items and full transcript.
+It also covers the busiest week, weekday, hour and moment, time spent on calls, and trends.
+A journey tab lines bookers up against webinar attendance (ClickMeeting), email opens and
+clicks (Email Campaigns), and the tracker's contacts, all matched by email.
+
+```
+node tools/calendly-sync.js             full pull (first run archives all history, ~5 min)
+node tools/calendly-sync.js --recent    last 14 days + upcoming, new recaps (~1 min)
+node tools/calendly-sync.js --upload    republish the archive
+```
+
+Needs `CALENDLY_TOKEN` (a Calendly personal access token) in `.env.local` and
+`tools/service-account.json`. `tools/install-schedule.ps1` adds two tasks: the full sync
+daily at 5:30 AM and `--recent` every 15 minutes. The page listens for each new sync and
+refreshes itself.
+
+**Nothing is ever lost.** Calendly serves about a year of history. The sync keeps
+everything it has ever seen in `tools/.calendly-cache/` (gitignored) and in Firestore. A
+booking Calendly drops is kept and shown as "archived". If the cache folder is lost, the
+next run rebuilds it from Firestore before calling Calendly.
+
+**Internal meetings stay private.** A recorded meeting where every attendee is
+@phcinvest.com (check-ins, standups) goes to `calendlyPrivate`. Only the owner and the
+emails in `calendlyLeaders()` in `firestore.rules` can read it. Everyone else sees only
+calls with people outside the team.
+
 ## Security model
 
 `firestore.rules` is the whole of it:

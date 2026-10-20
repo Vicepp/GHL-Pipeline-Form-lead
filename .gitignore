@@ -20,3 +20,6 @@ TEAM-PASSWORDS.md
 
 # GHL email sync cache - holds contact emails
 tools/.ghl-cache/
+
+# Calendly sync archive - holds invitee details and meeting transcripts
+tools/.calendly-cache/

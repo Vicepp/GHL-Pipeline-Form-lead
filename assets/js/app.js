@@ -1,7 +1,7 @@
 /* Pheenyx Capital - Pipeline Workflow
    app.js : routing, views, interactions.  Started by boot.js.
 
-   Routes: #/dashboard #/email[/24h] #/pipelines #/pipeline/<id> #/forms #/forms/<id|new>
+   Routes: #/dashboard #/email[/24h] #/calendly #/pipelines #/pipeline/<id> #/forms #/forms/<id|new>
            #/contacts #/settings        (all require a signed-in team member)
            #/f/<formId>                 (public form - no login, ever)        */
 
@@ -185,6 +185,7 @@ const NAV = [
   { r: 'analytics', label: 'Analytics', ic: '◔' },
   { r: 'webinars', label: 'Webinars', ic: '▶' },
   { r: 'email', label: 'Email Campaigns', ic: '✉' },
+  { r: 'calendly', label: 'Calendly Calls', ic: '☎' },
   { r: 'pipelines', label: 'Pipelines', ic: '⌸' },
   { r: 'forms', label: 'Forms', ic: '☰' },
   { r: 'contacts', label: 'Contacts', ic: '☺' },
@@ -2439,6 +2440,7 @@ function openContact(id) {
       '<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Tasks</h3><div class="spacer"></div>' +
         '<button class="btn btn-sm" data-act="task-add" data-id="' + c.id + '">+ Task</button></div>' +
         (tasks.length ? tasks.map(taskRow).join('') : '<div class="empty tiny">No tasks.</div>') + '</div>' +
+      (typeof calContactCard === 'function' ? calContactCard(c.email) : '') +
       '<div class="card"><div class="card-h"><h3>Form answers</h3></div><div class="card-b">' +
         (answers.length ? '<div class="kvlist">' + answers.map(([k, v]) => kvRow(k, esc(v) || '-')).join('') + '</div>'
           : '<div class="muted tiny">No stored answers (added manually).</div>') + '</div></div>',
@@ -3119,6 +3121,7 @@ function render() {
       else viewWebinarsMap();
       break;
     case 'email': if (parts[1] === '24h') viewEmail24h(); else viewEmailCampaigns(); break;
+    case 'calendly': viewCalendly(); break;
     case 'pipelines': viewPipelines(); break;
     case 'pipeline': viewBoard(parts[1]); break;
     case 'forms':
@@ -3131,7 +3134,7 @@ function render() {
     case 'settings': viewSettings(); break;
     default: location.hash = '#/dashboard';
   }
-  if (!(parts[0] === 'email' && typeof emKeepScroll !== 'undefined' && emKeepScroll)) window.scrollTo(0, 0);
+  if (!((parts[0] === 'email' || parts[0] === 'calendly') && typeof emKeepScroll !== 'undefined' && emKeepScroll)) window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', () => {
   closeModal();
