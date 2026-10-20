@@ -19,7 +19,9 @@
    For everyone else that read is refused and the Team tab simply is not shown. */
 
 const CAL_ST = ['held', 'noshow', 'up', 'resched', 'cancel'];
-const CAL_LBL = { held: 'Completed', noshow: 'No-show', up: 'Upcoming', resched: 'Rescheduled', cancel: 'Canceled' };
+const CAL_LBL = { held: 'Completed', noshow: 'Missed', up: 'Upcoming', resched: 'Rescheduled', cancel: 'Canceled' };
+/* how long after a Zoom call ends before a missing recording means the call never happened */
+const CAL_REC_GRACE = 6 * 3600;
 const CAL_COL = { held: '#0f9d63', noshow: '#7c3b52', up: '#3366cc', resched: '#b8860b', cancel: '#c0392b' };
 const CAL_HOURS = '#16223a';
 const CAL_LOC = { zoom: 'Zoom', outbound_call: 'Phone call', inbound_call: 'They call in', custom: 'Other / custom',
@@ -118,20 +120,42 @@ function calBuild(m, ev, inv, rc, priv) {
   const recByEv = new Map();
   recaps.forEach(r => { if (r.ev) recByEv.set(r.ev, r); });
 
+  /* Notetaker era: from the first booked call it recorded */
+  const eraList = recaps.filter(r => r.ev && r.s).map(r => r.s);
+  const eraStart = eraList.length ? Math.min(...eraList) : 0;
+  const ghl = new Map();
+  (m.ghl || []).forEach(x => { if (!ghl.has(x.e)) ghl.set(x.e, []); ghl.get(x.e).push({ k: x.k, at: calSec(x.at), stage: x.stage }); });
   const B = ev.map(e => {
     const vs = invByEv.get(e.id) || [];
     const v = vs.find(x => x.status === 'active') || vs[0] || null;
     const s = calSec(e.start), en = calSec(e.end), cr = calSec(e.created) || s;
-    let st;
+    /* did the call happen? Strongest evidence first:
+         Calendly no-show mark > Notetaker recording > the GHL label on the person
+         (Discovery Calls Completed / Missed Discovery Calls / No Show), dated near the call
+         > a Zoom call in the Notetaker era with no recording = it never happened = missed.
+       Phone calls and calls before Notetaker cannot be checked: counted as completed,
+       flagged unverified. */
+    const rec = recByEv.get(e.id) || null;
+    const ghlNear = (k) => (ghl.get(v ? v.email : '') || []).some(x => x.k === k && x.at >= s - 86400 && x.at <= s + 10 * 86400);
+    let st, why = '';
     if (e.status === 'canceled') st = v && v.rescheduled ? 'resched' : 'cancel';
     else if (s > now) st = 'up';
-    else if (v && v.noShow) st = 'noshow';
-    else st = 'held';
+    else if (v && v.noShow) { st = 'noshow'; why = 'Marked as a no-show in Calendly'; }
+    else if (rec) { st = 'held'; why = 'rec'; }
+    else if (ghlNear('done')) { st = 'held'; why = 'ghl'; }
+    else if (ghlNear('missed')) { st = 'noshow'; why = 'Labelled missed / no-show in the GoHighLevel pipeline'; }
+    else if (e.loc === 'zoom' && eraStart && s >= eraStart && en + CAL_REC_GRACE < now) {
+      st = 'noshow'; why = 'Zoom call with no Notetaker recording - Notetaker has recorded every Zoom call that took place since ' +
+        emDayLabel(emCal(eraStart).day) + ', so this one never happened';
+    } else {
+      st = 'held';
+      why = e.loc === 'zoom' && eraStart && s >= eraStart ? 'wait' : e.loc === 'zoom' ? 'pre' : 'phone';
+    }
     const qa = v ? v.qa || [] : [];
     const ans = (re) => { const x = qa.find(q => re.test(q[0])); return x ? String(x[1] || '').trim() : ''; };
     const c = emCal(s), mk = emCal(cr);
     return {
-      id: e.id, e, v, vs, s, en, cr, st, rec: recByEv.get(e.id) || null,
+      id: e.id, e, v, vs, s, en, cr, st, why, rec, verified: st !== 'held' || why === 'rec' || why === 'ghl',
       min: Math.max(0, Math.round((en - s) / 60)), lead: (s - cr) / 86400,
       email: v ? v.email : '', name: v ? (v.name || v.email) : '(no invitee)',
       day: c.day, dow: c.dow, hour: c.hour, mday: mk.day, mdow: mk.dow, mhour: mk.hour,
@@ -172,7 +196,7 @@ function calBuild(m, ev, inv, rc, priv) {
 
   let minDay = Infinity, maxDay = -Infinity;
   B.forEach(b => { if (b.day < minDay) minDay = b.day; if (b.day > maxDay) maxDay = b.day; });
-  return { B, recaps, people, minDay, maxDay, byId: new Map(B.map(b => [b.id, b])), recById: new Map(recaps.map(r => [r.id, r])) };
+  return { B, recaps, people, minDay, maxDay, eraStart, ghl, byId: new Map(B.map(b => [b.id, b])), recById: new Map(recaps.map(r => [r.id, r])) };
 }
 
 /* ------------------------------------------------------------ filtering */
@@ -188,7 +212,7 @@ function calSelect() {
   const r = calRange(), q = calF.q.trim().toLowerCase();
   const out = calRaw.B.filter(b => {
     if (b.day < r.from || b.day > r.to) return false;
-    if (calF.status === 'recorded' ? !(b.st === 'held' && b.rec) : calF.status === 'lost' ? !(b.st === 'cancel' || b.st === 'resched' || b.st === 'noshow')
+    if (calF.status === 'recorded' ? !(b.st === 'held' && b.rec) : calF.status === 'unverified' ? !(b.st === 'held' && !b.verified) : calF.status === 'lost' ? !(b.st === 'cancel' || b.st === 'resched' || b.st === 'noshow')
       : calF.status !== 'all' && b.st !== calF.status) return false;
     if (calF.loc !== 'all' && b.loc !== calF.loc) return false;
     if (calF.source !== 'all' && (b.src || '(not asked)') !== calF.source) return false;
@@ -204,7 +228,7 @@ const calLive = (st) => st === 'held' || st === 'up' || st === 'noshow';
 const calLost = (st) => st === 'cancel' || st === 'resched' || st === 'noshow';
 function calAgg(sel) {
   const a = {
-    n: sel.B.length, st: { held: 0, noshow: 0, up: 0, resched: 0, cancel: 0 }, recorded: 0, min: 0,
+    n: sel.B.length, st: { held: 0, noshow: 0, up: 0, resched: 0, cancel: 0 }, recorded: 0, verified: 0, min: 0,
     meet: calGrid(), made: calGrid(), dowN: new Array(7).fill(0), dowMin: new Array(7).fill(0),
     dowTot: new Array(7).fill(0), dowLost: new Array(7).fill(0), hourN: new Array(24).fill(0), hourMin: new Array(24).fill(0),
     hourTot: new Array(24).fill(0), hourLost: new Array(24).fill(0),
@@ -215,7 +239,7 @@ function calAgg(sel) {
   const r = sel.range;
   for (const b of sel.B) {
     a.st[b.st]++;
-    if (b.st === 'held') { a.min += b.min; if (b.rec) a.recorded++; a.dowMin[b.dow] += b.min; a.hourMin[b.hour] += b.min; }
+    if (b.st === 'held') { a.min += b.min; if (b.rec) a.recorded++; if (b.verified) a.verified++; a.dowMin[b.dow] += b.min; a.hourMin[b.hour] += b.min; }
     if (calLive(b.st)) { a.meet[b.dow][b.hour]++; a.dowN[b.dow]++; a.hourN[b.hour]++; }
     a.made[b.mdow][b.mhour]++;
     a.madeDays.set(b.mday, (a.madeDays.get(b.mday) || 0) + 1);
@@ -412,14 +436,21 @@ function calInsights(a, bz) {
       ' CT</b> (' + bz.slot.v + ' calls). People book most on ' + (bz.mslot ? EM_DAYS[bz.mslot.di] + ' around ' + emHourLabel(bz.mslot.h) : '-') +
       ' - a good time for reminders and follow-up nudges.' });
   }
-  if (a.st.held >= 10) {
-    const cov = rate(a.recorded, a.st.held);
-    if (cov < 60) out.push({ k: 'warn', t: '<b>Only ' + cov + '% of completed calls have a Notetaker recording.</b> Turn Notetaker on for the 30 Minute Meeting ' +
-      'so every call gets a transcript, summary and action items here.' });
+  const phone = a.sel.B.filter(b => b.st === 'held' && b.why === 'phone').length;
+  if (phone >= 5) {
+    out.push({ k: 'warn', t: '<b>' + phone + ' phone calls cannot be checked</b> - Notetaker only records Zoom, so they count as completed. ' +
+      'Moving each person to "Discovery Calls Completed" or "Missed Discovery Calls" in the GHL Calendly pipeline makes them exact here.' });
   }
-  if (a.decided >= 20 && !a.st.noshow) {
-    out.push({ k: 'warn', t: '<b>No call has ever been marked a no-show in Calendly</b>, so "completed" means "not canceled". Marking no-shows ' +
-      '(Calendly &rarr; Meetings &rarr; Mark as no-show) makes the show rate here exact.' });
+  const ms = calMissStats(a.sel);
+  if (ms.n >= 10) {
+    out.unshift({ k: ms.rate >= 25 ? 'bad' : ms.rate >= 12 ? 'warn' : 'ok', t: '<b>' + ms.rate + '% of Zoom calls never happened</b> (' + ms.missed + ' of ' + ms.n +
+      ' since Notetaker started recording on ' + esc(emDayLabel(emCal(calRaw.eraStart).day)) + '). ' +
+      (ms.worstDow ? 'Most missed on <b>' + EM_DAYS[ms.worstDow.i] + '</b> (' + ms.worstDow.r + '%). ' : '') +
+      ms.rebooked + ' of those missed calls were rebooked and ' + ms.recovered + ' then happened; ' + ms.lostPeople + ' people never came back - see the Missed calls tab.' });
+    if (ms.farRate != null && ms.nearRate != null && ms.farRate - ms.nearRate >= 8) out.push({ k: 'warn', t: '<b>Calls booked a week or more ahead are missed ' + ms.farRate +
+      '% of the time</b>, against ' + ms.nearRate + '% for calls booked within 2 days. A reminder the day before would catch these.' });
+    if (ms.firstRate != null && ms.repeatRate != null) out.push({ k: ms.firstRate > ms.repeatRate + 8 ? 'warn' : 'ok', t: 'First-time bookers miss <b>' + ms.firstRate +
+      '%</b> of calls; people who have spoken with us before miss ' + ms.repeatRate + '%.' });
   }
   const repeat = [...a.people].filter(e => (calRaw.people.get(e) || { b: [] }).b.filter(b => b.st === 'held').length >= 2).length;
   if (a.people.size >= 10) out.push({ k: 'ok', t: '<b>' + repeat + ' people</b> have had two or more completed calls - your warmest relationships. ' +
@@ -464,10 +495,16 @@ function calSel(name, label, opts, cur) {
     opts.map(o => '<option value="' + esc(o[0]) + '"' + (String(cur) === String(o[0]) ? ' selected' : '') + '>' + esc(o[1]) + '</option>').join('') +
     '</select></label>';
 }
+const CAL_WHY = {
+  rec: 'Recorded by Notetaker', ghl: 'Labelled "Discovery Calls Completed" in GoHighLevel',
+  wait: 'Waiting for the Notetaker recording (checked 6 hours after the call)',
+  pre: 'Before Notetaker started recording - cannot be verified', phone: 'Phone call - Notetaker cannot record these, so it cannot be verified'
+};
+function calWhy(b) { return CAL_WHY[b.why] || b.why || ''; }
 function calStatusPill(b) {
-  const extra = b.st === 'held' && b.rec ? ' &middot; recorded' : '';
-  return '<span class="pill" style="background:' + CAL_COL[b.st] + '1a;color:' + CAL_COL[b.st] + ';border-color:transparent">' +
-    CAL_LBL[b.st] + extra + '</span>' + (b.gone ? ' <span class="pill" title="Calendly no longer has this booking - it is kept in our archive">archived</span>' : '');
+  const extra = b.st === 'held' ? (b.why === 'rec' ? ' &middot; recorded' : b.why === 'ghl' ? ' &middot; GHL' : b.why === 'wait' ? ' &middot; checking' : ' &middot; unverified') : '';
+  return '<span class="pill" title="' + esc(calWhy(b)) + '" style="background:' + CAL_COL[b.st] + '1a;color:' + CAL_COL[b.st] + ';border-color:transparent' +
+    (b.st === 'held' && !b.verified ? ';opacity:.75' : '') + '">' + CAL_LBL[b.st] + extra + '</span>' + (b.gone ? ' <span class="pill" title="Calendly no longer has this booking - it is kept in our archive">archived</span>' : '');
 }
 const calStamp = (sec) => (sec ? emStamp(sec) : '-');
 
@@ -503,7 +540,7 @@ function viewCalendly() {
     '<label class="wb-f"><span>From</span><input type="date" class="inp sort-sel" data-calf="from" value="' + emDayIso(r.from) + '"></label>' +
     '<label class="wb-f"><span>To</span><input type="date" class="inp sort-sel" data-calf="to" value="' + emDayIso(r.to) + '"></label>' +
     calSel('status', 'Outcome', [['all', 'Every booking'], ['held', 'Completed'], ['recorded', 'Completed & recorded'], ['up', 'Upcoming'],
-      ['lost', 'Fell through (any)'], ['cancel', 'Canceled'], ['resched', 'Rescheduled'], ['noshow', 'No-show']], calF.status) +
+      ['unverified', 'Completed, unverified'], ['noshow', 'Missed (never happened)'], ['lost', 'Fell through (any)'], ['cancel', 'Canceled'], ['resched', 'Rescheduled']], calF.status) +
     (locs.length > 1 ? calSel('loc', 'Where', [['all', 'Anywhere']].concat(locs.map(l => [l, CAL_LOC[l] || l])), calF.loc) : '') +
     calSel('source', 'Heard about us', [['all', 'Any source']].concat(srcs.map(s => [s, s])), calF.source) +
     '<label class="wb-f"><span>Search</span><input class="inp sort-sel" data-calf="q" placeholder="name, email or note" value="' + esc(calF.q) + '"></label>' +
@@ -521,13 +558,13 @@ function viewCalendly() {
       foot: a.newPeople.size.toLocaleString() + ' booking for the first time &middot; ' + a.st.up + ' upcoming' }) +
     tile({ tone: 'mint', icon: '&#10003;', label: 'Calls completed', value: a.st.held.toLocaleString(),
       delta: { dir: showRate >= 75 ? 'up' : showRate >= 55 ? '' : 'down', text: showRate + '% go ahead' },
-      foot: a.recorded + ' recorded with Notetaker' }) +
+      foot: a.verified + ' verified (' + a.recorded + ' recorded) &middot; ' + (a.st.held - a.verified) + ' unverified' }) +
     tile({ tone: 'cream', icon: '&#9201;', label: 'Time on calls', value: calHrs(a.min),
       delta: { text: (a.st.held ? Math.round(a.min / a.st.held) : 0) + ' min avg' },
       foot: (Math.round(a.min / bz.nWeeks / 6) / 10) + 'h a week on average' }) +
     tile({ tone: 'pink', icon: '&#10007;', label: 'Fell through', value: a.lost.toLocaleString(),
       delta: { dir: a.decided && a.lost / a.decided > 0.3 ? 'down' : '', text: (a.decided ? Math.round(a.lost / a.decided * 100) : 0) + '%' },
-      foot: a.st.cancel + ' canceled &middot; ' + a.st.resched + ' rescheduled &middot; ' + a.cancelBy.invitee + ' by them, ' + a.cancelBy.host + ' by us' }) +
+      foot: '<b>' + a.st.noshow + ' missed</b> &middot; ' + a.st.cancel + ' canceled &middot; ' + a.st.resched + ' rescheduled' }) +
     '</div>';
 
   /* ---------- busiest ---------- */
@@ -547,6 +584,7 @@ function viewCalendly() {
     '</div></div></div>';
 
   /* ---------- insights ---------- */
+  a.sel = sel;
   const ins = calInsights(a, bz);
   const insCard = '<div class="card"><div class="card-h"><h3>What the data says</h3></div><div class="card-b">' +
     (ins.length ? '<ul class="em-recs">' + ins.map(x => '<li class="' + x.k + '">' + x.t + '</li>').join('') + '</ul>'
@@ -605,12 +643,13 @@ function viewCalendly() {
   /* ---------- tabs ---------- */
   const tabs = [['meetings', 'Meetings', sel.B.length], ['upcoming', 'Upcoming', D.B.filter(b => b.st === 'up').length],
     ['people', 'People', a.people.size], ['journey', 'Webinar & email journey', null],
+    ['missed', 'Missed calls', sel.B.filter(b => b.st === 'noshow').length],
     ['recorded', 'Recorded calls', D.recaps.filter(x => !x.internal).length]]
     .concat(calPrivOk ? [['team', 'Team meetings', D.recaps.filter(x => x.internal).length]] : []);
   if (!tabs.some(t => t[0] === calTab)) calTab = 'meetings';
   const tabBar = '<div class="seg cal-tabs">' + tabs.map(([v, l, n]) => '<button class="seg-btn ' + (calTab === v ? 'on' : '') +
     '" data-act="cal-tab" data-v="' + v + '">' + l + (n != null ? ' <b>' + n.toLocaleString() + '</b>' : '') + '</button>').join('') + '</div>';
-  const body = calTab === 'people' ? calPeopleTab(sel) : calTab === 'journey' ? calJourneyTab(sel) : calTab === 'recorded' ? calRecordedTab(false)
+  const body = calTab === 'missed' ? calMissedTab(sel) : calTab === 'people' ? calPeopleTab(sel) : calTab === 'journey' ? calJourneyTab(sel) : calTab === 'recorded' ? calRecordedTab(false)
     : calTab === 'team' ? calTeamTab(r) : calTab === 'upcoming' ? calUpcomingTab() : calMeetingsTab(sel);
   const listCard = '<div class="card" style="margin-top:16px"><div class="card-h">' + tabBar + '<div class="spacer"></div>' +
     '<span class="tiny muted">' + esc(emDayLabel(r.from)) + ' &ndash; ' + esc(emDayLabel(r.to)) + '</span></div>' + body + '</div>';
@@ -686,7 +725,7 @@ function calPeopleTab(sel) {
         '<div class="tiny muted">' + esc(p.email) + (p.state ? ' &middot; ' + esc(p.state) : '') + '</div></td>' +
       '<td>' + p.b.length + '</td>' +
       '<td>' + (p.n.held ? '<b>' + p.n.held + '</b>' : '<span class="muted">0</span>') + (p.n.up ? ' <span class="pill info">+' + p.n.up + ' upcoming</span>' : '') + '</td>' +
-      '<td class="tiny">' + (p.n.cancel + p.n.resched + p.n.noshow ? p.n.cancel + ' canceled, ' + p.n.resched + ' resched.' : '<span class="muted">-</span>') + '</td>' +
+      '<td class="tiny">' + (p.n.cancel + p.n.resched + p.n.noshow ? (p.n.noshow ? '<b style="color:' + CAL_COL.noshow + '">' + p.n.noshow + ' missed</b>, ' : '') + p.n.cancel + ' canceled, ' + p.n.resched + ' resched.' : '<span class="muted">-</span>') + '</td>' +
       '<td>' + (p.recs.length ? '<span class="pill ok">' + p.recs.length + '</span>' : '<span class="muted tiny">0</span>') + '</td>' +
       '<td class="tiny">' + calDur(p.min + p.recMin) + '</td>' +
       '<td class="tiny muted">' + (p.firstBook ? esc(emDayLabel(emCal(p.firstBook).day)) : '-') + '</td>' +
@@ -825,6 +864,78 @@ function calTeamTab(r) {
     '<div class="card-b tiny muted" style="padding-top:0">Only the owner and Calendly leaders can see this tab and these transcripts. Open any of them from Recorded calls &rarr; Internal.</div>';
 }
 
+/* ------------------------------------------------------------ missed calls */
+/** missed calls among the calls that can be checked: Zoom, since Notetaker started, past the grace period */
+function calMissStats(sel) {
+  const era = calRaw.eraStart, now = Date.now() / 1000;
+  const chk = sel.B.filter(b => era && b.loc === 'zoom' && b.s >= era && b.en + CAL_REC_GRACE < now && (b.st === 'held' || b.st === 'noshow'));
+  const miss = chk.filter(b => b.st === 'noshow');
+  const r = (x, n) => (n >= 5 ? Math.round(x / n * 100) : null);
+  const dows = EM_DAYS.map((_, i) => { const n = chk.filter(b => b.dow === i); return { i, n: n.length, r: r(n.filter(b => b.st === 'noshow').length, n.length) }; })
+    .filter(x => x.r != null).sort((x, y) => y.r - x.r);
+  const near = chk.filter(b => b.lead < 3), far = chk.filter(b => b.lead >= 7);
+  const prior = (b) => { const p = calRaw.people.get(b.email); return p ? p.b.some(x => x.s < b.s && x.st === 'held' && x.verified) : false; };
+  const first = chk.filter(b => !prior(b)), rep = chk.filter(prior);
+  /* after missing: did they book again, and did that call happen? */
+  const after = miss.map(b => {
+    const p = calRaw.people.get(b.email);
+    const later = p ? p.b.filter(x => x.cr > b.s - 3600 && x.id !== b.id) : [];
+    return { b, later, rebooked: later.length > 0, recovered: later.some(x => x.st === 'held'), upcoming: later.some(x => x.st === 'up') };
+  });
+  const people = new Set(miss.map(b => b.email));
+  const lostPeople = [...people].filter(e => !after.some(x => x.b.email === e && x.rebooked)).length;
+  return { n: chk.length, missed: miss.length, rate: chk.length ? Math.round(miss.length / chk.length * 100) : 0, chk, after,
+    worstDow: dows.length >= 2 && dows[0].r > dows[dows.length - 1].r ? dows[0] : null, dows,
+    nearRate: r(near.filter(b => b.st === 'noshow').length, near.length), farRate: r(far.filter(b => b.st === 'noshow').length, far.length),
+    firstRate: r(first.filter(b => b.st === 'noshow').length, first.length), repeatRate: r(rep.filter(b => b.st === 'noshow').length, rep.length),
+    rebooked: after.filter(x => x.rebooked).length, recovered: after.filter(x => x.recovered).length, lostPeople };
+}
+
+function calMissedTab(sel) {
+  const ms = calMissStats(sel);
+  const all = sel.B.filter(b => b.st === 'noshow').sort((x, y) => y.s - x.s);
+  const tr = calTrackerIdx();
+  const era = calRaw.eraStart ? esc(emDayLabel(emCal(calRaw.eraStart).day)) : '-';
+  const after = new Map(ms.after.map(x => [x.b.id, x]));
+  const weekly = new Map();
+  ms.chk.forEach(b => { const w = calWeekOf(b.day); const x = weekly.get(w) || { n: 0, m: 0 }; x.n++; if (b.st === 'noshow') x.m++; weekly.set(w, x); });
+  const wk = [...weekly.entries()].sort((x, y) => x[0] - y[0]);
+  const wmax = Math.max(1, ...wk.map(x => x[1].n));
+  const strip = wk.length >= 2 ? '<div class="cal-mstrip">' + wk.map(([w, x]) => '<div title="' + esc('Week of ' + emDayLabel(w) + ': ' + x.m + ' missed of ' + x.n +
+    ' Zoom calls (' + Math.round(x.m / x.n * 100) + '%)') + '"><span style="height:' + Math.round(x.n / wmax * 100) + '%"><i style="height:' +
+    Math.round(x.m / Math.max(1, x.n) * 100) + '%"></i></span><em>' + esc(calShortDay(w)) + '</em></div>').join('') + '</div>' +
+    '<div class="st-legend tiny" style="margin-top:4px"><span><i style="background:#cfe6da"></i>Zoom calls that week</span><span><i style="background:' +
+    CAL_COL.noshow + '"></i>missed</span></div>' : '';
+  return '<div class="card-b"><div class="em-cq">' +
+      '<div class="' + (ms.rate >= 20 ? 'bad' : '') + '"><b>' + ms.rate + '%</b><span>of checkable Zoom calls never happened (' + ms.missed + ' of ' + ms.n + ')</span></div>' +
+      '<div><b>' + ms.rebooked + '</b><span>missed calls the person rebooked</span></div>' +
+      '<div class="ok"><b>' + ms.recovered + '</b><span>of those then happened</span></div>' +
+      '<div class="' + (ms.lostPeople ? 'bad' : '') + '"><b>' + ms.lostPeople + '</b><span>people missed and never rebooked - follow up</span></div>' +
+      '<div><b>' + (ms.worstDow ? EM_DAYS[ms.worstDow.i] : '-') + '</b><span>most missed weekday' + (ms.worstDow ? ' (' + ms.worstDow.r + '%)' : '') + '</span></div>' +
+    '</div>' + strip +
+    '<div class="tiny muted" style="margin-top:10px">How "missed" is decided: Notetaker has recorded every Zoom call that took place since ' + era +
+      '. A Zoom call since then with no recording 6 hours after it ended never happened. A Calendly no-show mark, or a GoHighLevel ' +
+      '"Missed Discovery Calls" / "No Show" label near the call date, also counts as missed; a GHL "Discovery Calls Completed" label counts as held even without a recording. ' +
+      'Phone calls and calls before ' + era + ' cannot be checked, so they are never called missed.</div></div>' +
+    '<div class="scroll-x"><table class="tbl"><thead><tr><th>Missed call</th><th>Who</th><th>Booked</th><th>Since then</th><th></th></tr></thead><tbody>' +
+    (all.length ? all.slice(0, calShow).map(b => {
+      const x = after.get(b.id);
+      const p = calRaw.people.get(b.email);
+      const prev = p ? p.b.filter(y => y.s < b.s && y.st === 'held').length : 0;
+      const next = x ? (x.recovered ? '<span class="pill ok">rebooked &amp; spoke</span>' : x.upcoming ? '<span class="pill info">rebooked - upcoming</span>'
+        : x.rebooked ? '<span class="pill warn">rebooked, not held yet</span>' : '<span class="pill bad">never rebooked</span>') : '';
+      return '<tr><td class="tiny" style="white-space:nowrap"><b>' + esc(calStamp(b.s)) + '</b><div class="muted">' + esc(CAL_LOC[b.loc] || b.loc) + '</div></td>' +
+        '<td><a href="#" class="n" data-act="cal-person" data-v="' + esc(b.email) + '">' + esc(b.name) + '</a><div class="tiny muted">' + esc(b.email) +
+          (b.phone ? ' &middot; ' + esc(b.phone) : '') + '</div>' +
+          '<div class="tiny">' + (prev ? '<span class="pill ok">' + prev + ' call' + (prev === 1 ? '' : 's') + ' before</span>' : '<span class="wb-new">FIRST BOOKING</span>') +
+          (tr.has(b.email) ? ' <a href="#" class="pill info" data-act="contact" data-id="' + tr.get(b.email) + '">in tracker</a>' : '') + '</div></td>' +
+        '<td class="tiny muted">' + (b.lead < 1 ? 'same day' : Math.round(b.lead) + ' days ahead') + (b.src ? '<div>' + esc(b.src) + '</div>' : '') + '</td>' +
+        '<td>' + next + '</td>' +
+        '<td><button class="btn btn-sm" data-act="cal-meeting" data-v="' + b.id + '">Open</button></td></tr>';
+    }).join('') : '<tr><td colspan="5"><div class="empty tiny">No missed calls in this range.</div></td></tr>') +
+    '</tbody></table></div>' + calMore(all.length);
+}
+
 /* ------------------------------------------------------------ pop-ups */
 /** the recap markdown Calendly writes: **bold**, "- " bullets, blank-line paragraphs */
 function calMd(s) {
@@ -864,7 +975,7 @@ function calMeeting(id) {
   openModal({
     title: b.name + ' - ' + calStamp(b.s), wide: true,
     body: '<div class="kvlist" style="margin-bottom:16px">' +
-        kvRow('Outcome', calStatusPill(b)) +
+        kvRow('Outcome', calStatusPill(b) + (calWhy(b) ? '<div class="tiny muted" style="margin-top:4px">' + esc(calWhy(b)) + '</div>' : '')) +
         kvRow('When', esc(calStamp(b.s)) + ' CT &middot; ' + calDur(b.min) + (b.tz && b.tz !== EM_TZ ? ' <span class="tiny muted">(their time zone: ' + esc(b.tz) + ')</span>' : '')) +
         kvRow('Meeting', esc(e.name) + ' &middot; ' + esc(CAL_LOC[b.loc] || b.loc) + ' &middot; host ' + esc((e.hosts || []).map(h => h.n).join(', '))) +
         kvRow('Email', b.email ? '<a href="mailto:' + esc(b.email) + '">' + esc(b.email) + '</a>' : '-') +
@@ -1038,11 +1149,11 @@ function calCsv() {
   const sel = calSelect();
   const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
   const lines = [['meeting_central', 'minutes', 'outcome', 'name', 'email', 'phone', 'state', 'timezone', 'heard_via', 'booked_central', 'days_ahead',
-    'canceled_by', 'cancel_reason', 'location', 'recorded', 'recap_summary', 'note'].map(q).join(',')];
+    'canceled_by', 'cancel_reason', 'location', 'recorded', 'how_we_know', 'recap_summary', 'note'].map(q).join(',')];
   sel.B.slice().sort((x, y) => x.s - y.s).forEach(b => {
     const c = b.e.cancel || {};
     lines.push([calStamp(b.s), b.min, CAL_LBL[b.st], b.name, b.email, b.phone, b.state, b.tz, b.src, calStamp(b.cr), Math.round(b.lead * 10) / 10,
-      c.type || '', c.reason || '', CAL_LOC[b.loc] || b.loc, b.rec ? 'yes' : '', b.rec ? String(b.rec.summary || '').replace(/\*\*/g, '') : '', b.note].map(q).join(','));
+      c.type || '', c.reason || '', CAL_LOC[b.loc] || b.loc, b.rec ? 'yes' : '', calWhy(b), b.rec ? String(b.rec.summary || '').replace(/\*\*/g, '') : '', b.note].map(q).join(','));
   });
   const blob = new Blob([lines.join('\r\n')], { type: 'text/csv' });
   const a = document.createElement('a');

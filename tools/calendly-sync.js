@@ -26,7 +26,8 @@
 
    What lands in Firestore:
      calendlyAnalytics (team may read)
-       meta               counts, sync time, users, event types, chunk names
+       meta               counts, sync time, users, event types, chunk names,
+                          GHL call-outcome labels (completed / missed per person)
        events_<v>_N       bookings (JSON)
        invitees_<v>_N     who booked: answers, UTM, cancel, no-show, reschedule
        recaps_<v>_N       Notetaker recaps of calls with anyone outside the team
@@ -281,6 +282,48 @@ async function loadRecaps(A) {
   });
 }
 
+/* ------------------------------------------------- 4. GHL call outcomes
+   The team labels calls in GoHighLevel, not in Calendly: the CALENDLY CALLS
+   pipelines move a person to "Discovery Calls Completed" or "Missed Discovery
+   Calls", and deal pipelines have "No Show / No Response". The page uses these
+   as evidence next to the Notetaker recordings. Kept per person, with the date
+   of the stage change, since GHL does not say which booking it was about.   */
+async function loadGhlOutcomes(A) {
+  if (!ENV.GHL_API_TOKEN || !ENV.GHL_LOCATION_ID) return;
+  const H = { Authorization: 'Bearer ' + ENV.GHL_API_TOKEN, Version: '2021-07-28', Accept: 'application/json' };
+  const get = async (url) => {
+    for (let i = 0; i < 5; i++) {
+      const r = await fetch(url, { headers: H, signal: AbortSignal.timeout(60000) }).catch(() => null);
+      if (r && r.status === 200) return r.json();
+      await sleep(2000 * (i + 1));
+    }
+    return null;
+  };
+  const p = await get('https://services.leadconnectorhq.com/opportunities/pipelines?locationId=' + ENV.GHL_LOCATION_ID);
+  if (!p) { log('   GHL outcomes: pipelines unavailable - keeping the last copy'); return; }
+  const kind = (name) => (/complete/i.test(name) ? 'done' : /missed|no.?show/i.test(name) ? 'missed' : /reschedul/i.test(name) ? 'resched' : '');
+  const out = [];
+  for (const pl of p.pipelines || []) {
+    const stages = {};
+    (pl.stages || []).forEach(s => { if (kind(s.name)) stages[s.id] = s.name; });
+    if (!Object.keys(stages).length) continue;
+    let url = 'https://services.leadconnectorhq.com/opportunities/search?location_id=' + ENV.GHL_LOCATION_ID + '&pipeline_id=' + pl.id + '&limit=100';
+    for (let pg = 0; url && pg < 100; pg++) {
+      const j = await get(url);
+      if (!j) break;
+      (j.opportunities || []).forEach(o => {
+        const st = stages[o.pipelineStageId];
+        const email = ((o.contact || {}).email || '').toLowerCase();
+        if (st && email) out.push({ e: email, k: kind(st), stage: st, pl: pl.name, at: o.lastStageChangeAt || o.updatedAt || o.createdAt });
+      });
+      url = (j.opportunities || []).length && j.meta && j.meta.nextPageUrl ? j.meta.nextPageUrl : null;
+    }
+  }
+  A.ghl = out;
+  log('   GHL outcomes: ' + out.filter(x => x.k === 'done').length + ' completed, ' + out.filter(x => x.k === 'missed').length +
+    ' missed / no-show, ' + out.filter(x => x.k === 'resched').length + ' reschedule labels');
+}
+
 /* ------------------------------------------------------------ firestore */
 let fsAdmin = null;
 function firestore() {
@@ -325,7 +368,7 @@ async function restoreFromFirestore() {
   log('no local archive - rebuilding it from Firestore before calling Calendly');
   const A = emptyArchive();
   const m = meta.data();
-  A.org = m.org || null; A.users = m.users || {}; A.eventTypes = m.eventTypes || {};
+  A.org = m.org || null; A.users = m.users || {}; A.eventTypes = m.eventTypes || {}; A.ghl = m.ghl || [];
   A.firstSync = m.firstSync || A.firstSync;
   const read = async (coll, ids) => {
     const out = [];
@@ -421,7 +464,7 @@ async function upload(A, mode) {
   const starts = events.map(e => e.start).filter(Boolean).sort();
   const common = { syncedAt: new Date().toISOString(), mode, timezone: 'America/Chicago' };
   const changedPub = await publishSet(db, COLL, { events, invitees, recaps: pub }, Object.assign({}, common, {
-    org: A.org, users: A.users, eventTypes: A.eventTypes, firstSync: A.firstSync,
+    org: A.org, users: A.users, eventTypes: A.eventTypes, firstSync: A.firstSync, ghl: A.ghl || [],
     counts: {
       events: events.length, invitees: invitees.length, recaps: pub.length, privateRecaps: priv.length,
       archivedOnly: events.filter(e => e.gone).length,
@@ -467,8 +510,11 @@ if (require.main === module) (async function main() {
     log('3) Notetaker recaps and transcripts');
     await loadRecaps(A);
     saveArchive(A);
+    log('4) call outcomes labelled in GoHighLevel');
+    await loadGhlOutcomes(A).catch(e => log('   GHL outcomes skipped: ' + e.message));
+    saveArchive(A);
   }
-  log('4) publishing');
+  log('5) publishing');
   await upload(A, uploadOnly ? 'upload' : recent ? 'recent' : 'full');
   log('DONE');
 })().catch(e => { console.error(e); process.exit(1); });

@@ -866,3 +866,8 @@ body{
 .cal-tr p.dim{opacity:.45}
 @media(max-width:1080px){.cal-busy{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:620px){.cal-busy,.cal-time{grid-template-columns:repeat(2,1fr)}}
+.cal-mstrip{display:flex;align-items:flex-end;gap:3px;height:110px;margin-top:14px;overflow-x:auto}
+.cal-mstrip>div{flex:1;min-width:16px;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center}
+.cal-mstrip span{width:100%;background:#cfe6da;border-radius:3px;display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden}
+.cal-mstrip i{display:block;width:100%;background:#7c3b52}
+.cal-mstrip em{font-style:normal;font-size:9px;color:var(--text-3);margin-top:3px;white-space:nowrap}
